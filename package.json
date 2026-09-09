@@ -11,6 +11,9 @@
   "keywords": ["typing", "typing-test", "wpm", "game", "leaderboard", "pwa", "zero-dependency"],
   "type": "commonjs",
   "main": "server.js",
+  "bin": {
+    "typerider-leaderboard": "bin/typerider-leaderboard"
+  },
   "scripts": {
     "start": "node server.js"
   },

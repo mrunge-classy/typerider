@@ -1,0 +1,456 @@
+#!/usr/bin/env node
+'use strict';
+
+/* Command line for the Typerider leaderboard API.
+   Zero dependencies, like the rest of the project: global fetch and
+   node:util.parseArgs. The admin password is never a command-line argument —
+   see resolvePassword() for where it comes from. */
+
+const { parseArgs } = require('node:util');
+const { spawnSync } = require('node:child_process');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const readline = require('node:readline/promises');
+
+const ADMIN_URL = process.env.TYPERIDER_ADMIN_URL || 'https://typerider-leaderboard.zugriff.at';
+const PUBLIC_URL = process.env.TYPERIDER_PUBLIC_URL || 'https://typerider.zugriff.at';
+const CONFIG_DIR = path.join(os.homedir(), '.config', 'typerider-leaderboard');
+
+// ---------------------------------------------------------------------- args
+
+let opts, positionals;
+try {
+  ({ values: opts, positionals } = parseArgs({
+    allowPositionals: true,
+    options: {
+      json: { type: 'boolean', default: false },
+      yes: { type: 'boolean', short: 'y', default: false },
+      'admin-url': { type: 'string' },
+      'public-url': { type: 'string' },
+      'password-file': { type: 'string' },
+      'no-color': { type: 'boolean', default: false },
+      help: { type: 'boolean', short: 'h', default: false }
+    }
+  }));
+} catch (err) {
+  process.stderr.write(`error: ${err.message}\nTry \`typerider-leaderboard --help\`.\n`);
+  process.exit(1);
+}
+
+const adminUrl = (opts['admin-url'] || ADMIN_URL).replace(/\/$/, '');
+const publicUrl = (opts['public-url'] || PUBLIC_URL).replace(/\/$/, '');
+
+const ESC = '\u001b';
+const COLOR = process.stdout.isTTY && !opts['no-color'] && !process.env.NO_COLOR;
+const c = (code, s) => (COLOR ? `${ESC}[${code}m${s}${ESC}[0m` : String(s));
+const bold = (s) => c('1', s);
+const dim = (s) => c('2', s);
+const red = (s) => c('31', s);
+const green = (s) => c('32', s);
+
+const USAGE = `typerider-leaderboard — administer the Typerider leaderboard
+
+  board                    the live board: every entry with its id (default)
+  top [n]                  the public leaderboard, as visitors see it
+  rm <entry-id | name>     remove one rider (kept in the deleted log)
+  reset                    retire the board and start a fresh one
+  limit [n]                show, or set, how many rows the homepage shows (3-50)
+  deleted                  riders removed from a board, newest first
+  archives                 boards that have been retired
+  archive <board-id>       one retired board in full
+  check                    reachability and access control; writes nothing
+
+Options
+  --json                   print the raw API response
+  -y, --yes                skip the confirmation prompt on rm and reset
+  --admin-url <url>        default ${ADMIN_URL}
+  --public-url <url>       default ${PUBLIC_URL}
+  --password-file <path>   read the admin password from this file
+  --no-color               plain output
+  -h, --help               this
+
+The admin password is looked up, in order: --password-file, $TYPERIDER_ADMIN_PASSWORD,
+~/.config/typerider-leaderboard/admin.pw.gpg (gpg prompts for the passphrase itself),
+then ~/.config/typerider-leaderboard/admin.pw. With none of those the tool runs
+unauthenticated, which is what you want against a local dev server:
+
+  typerider-leaderboard board --admin-url http://127.0.0.1:3999`;
+
+// -------------------------------------------------------------------- output
+
+function fail(message) {
+  process.stderr.write(red('error: ') + message + '\n');
+  process.exit(1);
+}
+
+// --------------------------------------------------------------- credentials
+
+let cachedPassword;
+
+function readPasswordFile(file) {
+  const stat = fs.statSync(file);
+  // A plaintext credential group- or world-readable is a mistake worth stopping for.
+  if (!file.endsWith('.gpg') && (stat.mode & 0o077) !== 0) {
+    fail(`${file} is readable by others — chmod 600 it, or encrypt it with gpg -c.`);
+  }
+  if (!file.endsWith('.gpg')) return fs.readFileSync(file, 'utf8').trim();
+
+  // gpg owns the passphrase prompt: stdin and stderr stay attached to the
+  // terminal so pinentry works and gpg-agent can cache it. The passphrase
+  // never passes through this process.
+  //
+  // pinentry needs to know which terminal to draw on. Interactive shells set
+  // GPG_TTY from their rc file; nothing guarantees it here, so derive it.
+  const env = { ...process.env };
+  if (!env.GPG_TTY && process.stdin.isTTY) {
+    try { env.GPG_TTY = fs.readlinkSync('/proc/self/fd/0'); } catch { /* not Linux */ }
+  }
+
+  const out = spawnSync('gpg', ['--quiet', '--decrypt', file], {
+    stdio: ['inherit', 'pipe', 'inherit'],
+    encoding: 'utf8',
+    env
+  });
+  if (out.error) fail(`could not run gpg: ${out.error.message}`);
+  if (out.status !== 0) fail(`gpg could not decrypt ${file}`);
+  return out.stdout.trim();
+}
+
+function resolvePassword() {
+  if (cachedPassword !== undefined) return cachedPassword;
+
+  const explicit = opts['password-file'];
+  if (explicit) {
+    if (!fs.existsSync(explicit)) fail(`no such password file: ${explicit}`);
+    return (cachedPassword = readPasswordFile(explicit));
+  }
+  if (process.env.TYPERIDER_ADMIN_PASSWORD) {
+    return (cachedPassword = process.env.TYPERIDER_ADMIN_PASSWORD);
+  }
+  for (const name of ['admin.pw.gpg', 'admin.pw']) {
+    const file = path.join(CONFIG_DIR, name);
+    if (fs.existsSync(file)) return (cachedPassword = readPasswordFile(file));
+  }
+  return (cachedPassword = null);
+}
+
+function authHeader() {
+  const pw = resolvePassword();
+  if (!pw) return null;
+  return 'Basic ' + Buffer.from(`admin:${pw}`).toString('base64');
+}
+
+// ----------------------------------------------------------------------- api
+
+let warnedNoCredential = false;
+
+async function api(route, { method = 'GET', body, auth = true, base = adminUrl } = {}) {
+  const headers = {};
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+
+  if (auth) {
+    const header = authHeader();
+    if (header) {
+      headers.Authorization = header;
+    } else if (!warnedNoCredential) {
+      warnedNoCredential = true;
+      process.stderr.write(dim('note: no admin password found, sending unauthenticated\n'));
+    }
+  }
+
+  let res;
+  try {
+    res = await fetch(base + route, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body)
+    });
+  } catch (err) {
+    fail(`${base} is unreachable: ${err.message}`);
+  }
+
+  const text = await res.text();
+  let data = null;
+  try { data = JSON.parse(text); } catch { /* nginx errors come back as HTML */ }
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      fail('401 — the admin password was rejected. Check ~/.config/typerider-leaderboard/,\n' +
+           '       or pass --password-file.');
+    }
+    // A 404 with no JSON body is nginx, not the app: almost always the admin
+    // API being asked for on the public host, where it is blocked by design.
+    if (res.status === 404 && !data && route.startsWith('/api/admin')) {
+      fail(`404 from ${base}${route}\n` +
+           `       The admin API is blocked on the public host by design — use ${ADMIN_URL}.`);
+    }
+    fail(`${res.status} ${res.statusText}${data && data.error ? ` — ${data.error}` : ''}`);
+  }
+  return data;
+}
+
+// ------------------------------------------------------------------ printing
+
+function when(ms, withTime = true) {
+  if (!ms) return '—';
+  return new Date(ms).toLocaleString('en-GB', {
+    day: 'numeric', month: 'short', year: 'numeric',
+    ...(withTime ? { hour: '2-digit', minute: '2-digit' } : {})
+  });
+}
+
+// Column widths must ignore the escape sequences colour adds.
+const width = (s) => String(s ?? '').replace(new RegExp(`${ESC}\\[[0-9;]*m`, 'g'), '').length;
+
+function table(headers, rows, numeric = []) {
+  if (!rows.length) return '';
+  const widths = headers.map((h, i) =>
+    Math.max(width(h), ...rows.map((r) => width(r[i]))));
+  const line = (cells) => cells
+    .map((cell, i) => {
+      const pad = ' '.repeat(widths[i] - width(cell));
+      return numeric.includes(i) ? pad + cell : cell + pad;
+    })
+    .join('  ')
+    .trimEnd();
+  return [dim(line(headers)), ...rows.map((r) => line(r.map((x) => String(x ?? ''))))].join('\n');
+}
+
+function out(data, render) {
+  if (opts.json) {
+    process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+    return;
+  }
+  render();
+}
+
+async function confirm(question, expect) {
+  if (opts.yes) return true;
+  if (!process.stdin.isTTY) {
+    fail('refusing to do that without a confirmation. Re-run with --yes if you mean it.');
+  }
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const answer = (await rl.question(question)).trim();
+  rl.close();
+  return expect === undefined ? /^y(es)?$/i.test(answer) : answer === expect;
+}
+
+// ------------------------------------------------------------------ commands
+
+async function cmdBoard() {
+  const data = await api('/api/admin/board');
+  out(data, () => {
+    process.stdout.write(
+      `${bold('Board')} ${data.board.id}\n` +
+      dim(`started ${when(data.board.createdAt)} · ${data.players} rider(s) · ` +
+          `top ${data.settings.leaderboardLimit} shown on the homepage`) + '\n\n');
+    if (!data.entries.length) {
+      process.stdout.write(dim('The board is empty.') + '\n');
+      return;
+    }
+    process.stdout.write(table(
+      ['#', 'RIDER', 'STORY', 'ACC', 'WPM', 'PLAYED', 'ENTRY ID'],
+      data.entries.map((e) => [
+        e.rank, e.name, e.track || '—',
+        `${Number(e.accuracy).toFixed(0)}%`, Number(e.wpm).toFixed(1),
+        when(e.playedAt), dim(e.id)
+      ]),
+      [0, 3, 4]) + '\n');
+  });
+}
+
+async function cmdTop(n) {
+  const q = n === undefined ? '' : `?limit=${encodeURIComponent(n)}`;
+  const data = await api('/api/leaderboard' + q, { auth: false, base: publicUrl });
+  out(data, () => {
+    process.stdout.write(dim(`Board started ${when(data.board.createdAt, false)} · ` +
+      `${data.players} rider(s) · showing up to ${data.limit}`) + '\n\n');
+    if (!data.entries.length) {
+      process.stdout.write(dim('No times yet.') + '\n');
+      return;
+    }
+    process.stdout.write(table(
+      ['#', 'RIDER', 'STORY', 'ACC', 'WPM'],
+      data.entries.map((e) => [
+        e.rank, e.name, e.track || '—',
+        `${Number(e.accuracy).toFixed(0)}%`, Number(e.wpm).toFixed(1)
+      ]),
+      [0, 3, 4]) + '\n');
+  });
+}
+
+async function cmdRm(needle) {
+  if (!needle) {
+    fail('which rider? Pass an entry id or a name — `typerider-leaderboard board` lists both.');
+  }
+
+  const board = await api('/api/admin/board');
+  const target = board.entries.find((e) => e.id === needle) ||
+    board.entries.find((e) => e.name.toLowerCase() === needle.toLowerCase());
+  if (!target) fail(`no rider on the live board matching "${needle}".`);
+
+  const ok = await confirm(
+    `Remove ${bold(target.name)} (${Number(target.wpm).toFixed(1)} WPM)? ` +
+    dim('Kept in the deleted log.') + ' [y/N] ');
+  if (!ok) {
+    process.stderr.write('Left alone.\n');
+    return;
+  }
+
+  const data = await api(`/api/admin/entry?id=${encodeURIComponent(target.id)}`, { method: 'DELETE' });
+  out(data, () => process.stdout.write(
+    `${green('Removed')} ${data.deleted.name} — ${data.players} rider(s) left on the board.\n`));
+}
+
+async function cmdReset() {
+  const board = await api('/api/admin/board');
+  const ok = await confirm(
+    `This retires the board started ${when(board.board.createdAt)} with ` +
+    `${board.players} rider(s). It is archived, not deleted.\n` +
+    `Type the board id to confirm (${dim(board.board.id)}): `,
+    board.board.id);
+  if (!ok) {
+    process.stderr.write('That did not match. Board left alone.\n');
+    return;
+  }
+
+  const data = await api('/api/admin/reset', { method: 'POST' });
+  out(data, () => process.stdout.write(
+    `${green('Archived')} ${data.archivedEntries} rider(s) to ${data.archived}\n` +
+    `New board ${data.board.id}, started ${when(data.board.createdAt)}.\n`));
+}
+
+async function cmdLimit(n) {
+  if (n === undefined) {
+    const data = await api('/api/admin/board');
+    out(data.settings, () => process.stdout.write(
+      `The homepage shows up to ${bold(data.settings.leaderboardLimit)} rows.\n`));
+    return;
+  }
+  const value = Number(n);
+  if (!Number.isInteger(value)) fail(`"${n}" is not a whole number.`);
+
+  const data = await api('/api/admin/settings', { method: 'POST', body: { leaderboardLimit: value } });
+  out(data, () => process.stdout.write(
+    `${green('Set')} — the homepage now shows up to ${data.settings.leaderboardLimit} rows.\n`));
+}
+
+async function cmdDeleted() {
+  const data = await api('/api/admin/board');
+  out(data.deleted, () => {
+    if (!data.deleted.length) {
+      process.stdout.write(dim('Nothing has been removed from a board yet.') + '\n');
+      return;
+    }
+    const rows = data.deleted
+      .slice()
+      .sort((a, b) => b.deletedAt - a.deletedAt)
+      .map((d) => [
+        d.entry.name, Number(d.entry.wpm).toFixed(1),
+        when(d.deletedAt), dim(d.boardId), when(d.boardCreatedAt, false)
+      ]);
+    process.stdout.write(
+      table(['RIDER', 'WPM', 'REMOVED', 'FROM BOARD', 'BOARD STARTED'], rows, [1]) + '\n');
+  });
+}
+
+async function cmdArchives() {
+  const data = await api('/api/admin/board');
+  out(data.archives, () => {
+    if (!data.archives.length) {
+      process.stdout.write(dim('No board has been reset yet.') + '\n');
+      return;
+    }
+    process.stdout.write(table(
+      ['STARTED', 'RIDERS', 'BOARD ID', 'FILE'],
+      data.archives.map((a) => [when(a.createdAt), a.entries, dim(a.id), dim(a.file)]),
+      [1]) + '\n');
+  });
+}
+
+async function cmdArchive(id) {
+  if (!id) fail('which board? `typerider-leaderboard archives` lists the ids.');
+  const { board } = await api(`/api/admin/archive?id=${encodeURIComponent(id)}`);
+  out(board, () => {
+    process.stdout.write(
+      `${bold('Archived board')} ${board.id}\n` +
+      dim(`started ${when(board.createdAt)} · ${board.entries.length} rider(s)`) + '\n\n');
+    if (!board.entries.length) {
+      process.stdout.write(dim('It was empty when it was retired.') + '\n');
+      return;
+    }
+    const ranked = board.entries
+      .slice()
+      .sort((a, b) => b.wpm - a.wpm || b.accuracy - a.accuracy || a.playedAt - b.playedAt);
+    process.stdout.write(table(
+      ['#', 'RIDER', 'STORY', 'ACC', 'WPM', 'PLAYED'],
+      ranked.map((e, i) => [
+        i + 1, e.name, e.track || '—',
+        `${Number(e.accuracy).toFixed(0)}%`, Number(e.wpm).toFixed(1), when(e.playedAt)
+      ]),
+      [0, 3, 4]) + '\n');
+  });
+}
+
+// Reads only. Also asserts the two nginx rules the admin API leans on: the
+// public host must not expose /api/admin, and the admin host must demand a
+// password. A regression in either is silent until someone goes looking.
+async function cmdCheck() {
+  const header = authHeader();
+  const withAuth = header ? { headers: { Authorization: header } } : {};
+
+  const probe = async (label, url, init, expected) => {
+    try {
+      const status = (await fetch(url, init)).status;
+      return { label, url, status, expected, ok: expected.includes(status) };
+    } catch (err) {
+      return { label, url, status: null, expected, ok: false, detail: err.message };
+    }
+  };
+
+  const results = [
+    await probe('public homepage', `${publicUrl}/`, {}, [200]),
+    await probe('public leaderboard API', `${publicUrl}/api/leaderboard`, {}, [200]),
+    await probe('admin API blocked on public host', `${publicUrl}/api/admin/board`, {}, [404]),
+    await probe('admin page demands a password', `${adminUrl}/`, {}, [401]),
+    await probe('admin page with password', `${adminUrl}/`, withAuth, [200]),
+    await probe('admin API with password', `${adminUrl}/api/admin/board`, withAuth, [200])
+  ];
+
+  out(results, () => {
+    for (const r of results) {
+      const mark = r.ok ? green('ok  ') : red('FAIL');
+      const got = r.status === null ? r.detail : r.status;
+      const want = r.ok ? '' : dim(` (expected ${r.expected.join(' or ')})`);
+      process.stdout.write(`${mark} ${String(got).padEnd(5)} ${r.label}${want}\n`);
+    }
+  });
+  if (!results.every((r) => r.ok)) process.exit(1);
+}
+
+// ------------------------------------------------------------------ dispatch
+
+async function main() {
+  if (opts.help) {
+    process.stdout.write(USAGE + '\n');
+    return;
+  }
+  const [command = 'board', arg] = positionals;
+
+  switch (command) {
+    case 'board': case 'entries': return cmdBoard();
+    case 'top': return cmdTop(arg);
+    case 'rm': case 'remove': case 'delete': return cmdRm(arg);
+    case 'reset': return cmdReset();
+    case 'limit': return cmdLimit(arg);
+    case 'deleted': return cmdDeleted();
+    case 'archives': return cmdArchives();
+    case 'archive': return cmdArchive(arg);
+    case 'check': return cmdCheck();
+    case 'help': process.stdout.write(USAGE + '\n'); return;
+    default: fail(`unknown command "${command}".\n\n${USAGE}`);
+  }
+}
+
+main().catch((err) => fail(err.stack || err.message));

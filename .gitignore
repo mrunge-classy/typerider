@@ -11,4 +11,13 @@ clone
 api
 sales
 settings
+stories-card
 stylelib
+ddos
+
+# Admin credentials never belong in this repo — the encrypted copy lives in the
+# private typerider-leaderboard repo, the working copy in ~/.config/.
+admin.pw
+admin.pw.*
+*.pw
+*.pw.gpg

@@ -173,7 +173,10 @@ pre b { color: #A5B4FC; font-weight: 600; }
       '</pre>' +
       '<p class="note">Entry ids are in the last column above — select one to copy it. ' +
       '<code>-u admin</code> prompts for the password. Removing a rider does not ban them: ' +
-      'they reappear if they play again.</p></section>';
+      'they reappear if they play again.</p>' +
+      '<p class="note">Easier from a shell: <code>bin/typerider-leaderboard</code> in the ' +
+      'Typerider repo wraps all of this — <code>typerider-leaderboard rm &lt;name&gt;</code> ' +
+      'takes a rider name instead of an id, and asks before it does anything.</p></section>';
   }
 
   function render(data) {
