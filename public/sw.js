@@ -36,6 +36,11 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
   if (url.pathname.startsWith('/api/')) return; // always live
+  // The admin surface is same-origin on a single-host deployment, and this
+  // worker's scope is the whole origin. Caching an authenticated page into
+  // the shared shell cache -- and falling back to /play when it 404s or the
+  // network drops -- is wrong on both counts.
+  if (url.pathname === '/admin' || url.pathname.startsWith('/admin/')) return;
 
   // Network first, cache as the offline fallback: an update goes live on the
   // next load instead of after a manual cache clear.

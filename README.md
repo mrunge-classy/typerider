@@ -30,6 +30,7 @@ PORT=3999 node server.js  # or pick your own port
 | `PORT` | `3034` | |
 | `HOST` | `127.0.0.1` | bind address |
 | `DATA_DIR` | `./data` | where the JSON state lives |
+| `ADMIN_PASSWORD` | unset | password for `/admin` and `/api/admin/*` |
 
 Scores land in `data/scores.json`. Delete the file to start a fresh board.
 
@@ -64,11 +65,21 @@ could mint unlimited usernames and grow an in-memory board until the process die
 other collections a request can grow are bounded the same way — see
 [DEPLOYMENT.md](DEPLOYMENT.md#abuse-ceilings).
 
-There is a second, admin-only surface under `/api/admin/*` for changing the board size,
-removing a rider, and resetting the board. **It carries no authentication of its own** — in
-production it lives behind HTTP basic auth on a separate hostname, and the public vhost
-404s the whole `/api/admin` prefix. Anyone running this themselves has to put equivalent
-protection in front of it, or leave those routes unreachable.
+There is a second, admin-only surface — `/api/admin/*` and the `/admin` page — for changing
+the board size, removing a rider, and resetting the board. **Set `ADMIN_PASSWORD` and the
+app checks it itself**, with HTTP basic auth, comparing digests rather than strings so the
+comparison time gives nothing away. Wrong passwords are budgeted at five a minute per
+address; a request carrying no credential is not a guess and does not count against that.
+
+Leave `ADMIN_PASSWORD` unset and the admin surface answers only to callers on this machine
+— which is what a reverse proxy in front of it is. That keeps the arrangement below working
+unchanged, and means `node server.js` on a public interface does not quietly expose the
+admin routes to the internet. It is not a substitute for the password on a shared host,
+where any local user can reach the port; the startup log says as much.
+
+In production the app password sits behind nginx's own basic auth on a separate hostname,
+and the public vhost 404s the whole `/api/admin` prefix. Both are now defence in depth
+rather than the only lock.
 
 Removing a rider is not a hard delete: the row moves to `data/deleted.json` carrying the
 id and start date of the board it came from. Resetting copies the whole board into
@@ -102,6 +113,18 @@ public/
 `bin/typerider-leaderboard` drives the admin API from the shell, so removing a rider does
 not mean copying a UUID out of a web page into `curl`.
 
+It ships pointed at nothing. Tell it where your typerider lives, once:
+
+```
+typerider-leaderboard config set admin.url https://your-host
+typerider-leaderboard config set admin.password-file ~/.config/typerider-leaderboard/admin.pw.gpg
+typerider-leaderboard check
+```
+
+Settings live in `~/.config/typerider-leaderboard/config.json`, written `600`.
+`config list` shows every key and what it is for; `public.url` is only needed if visitors
+use a different host from the admin one, as they do behind a split-vhost proxy.
+
 ```
 typerider-leaderboard board          # the live board, every entry with its id
 typerider-leaderboard top            # what visitors see on the homepage
@@ -111,20 +134,28 @@ typerider-leaderboard limit 10       # rows shown on the homepage (3-50)
 typerider-leaderboard deleted        # riders removed from a board
 typerider-leaderboard archives       # boards that have been retired
 typerider-leaderboard check          # reachability and access control, read-only
+typerider-leaderboard config list    # where it points, and how it authenticates
 ```
 
 `rm` and `reset` ask for confirmation — `reset` wants the board id typed back, since it
 retires a live public board. `--json` on any command prints the raw response, and
-`--admin-url http://127.0.0.1:3999` points it at a local dev server.
+`--admin-url http://127.0.0.1:3034` points it at a local dev server for one run, without
+touching the saved config.
 
 Nothing here is destructive by accident and no board is ever lost: a removed rider goes to
 a deleted log that records which board it came from, and a reset copies the whole board
 into an archive before starting the next one.
 
-The admin API sits behind HTTP basic auth on its own host. The tool reads the password
-from `--password-file`, `$TYPERIDER_ADMIN_PASSWORD`, or
-`~/.config/typerider-leaderboard/admin.pw.gpg` — with the `.gpg` file, gpg prompts for the
-passphrase itself, so it never passes through the tool. No credential lives in this repo.
+The password is read from `--password-file`, `$TYPERIDER_ADMIN_PASSWORD`, the
+`admin.password-file` key, or `admin.pw.gpg` in the config directory — with a `.gpg` file,
+gpg prompts for the passphrase itself, so it never passes through the tool. A plaintext
+password file that others can read is refused rather than used. No credential lives in this
+repo.
+
+`check` adapts to how you deployed it: given one host it asserts that the admin API turns
+anonymous callers away, and given two that the public host does not expose `/api/admin` at
+all and the admin host demands a password. It writes nothing, and knocks without a
+credential on purpose, so it is safe to run repeatedly.
 
 ## Deployment
 

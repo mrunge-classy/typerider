@@ -10,6 +10,7 @@ const PORT = Number(process.env.PORT || 3034);
 const HOST = process.env.HOST || '127.0.0.1';
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 const SCORES_FILE = path.join(DATA_DIR, 'scores.json');
 const DELETED_FILE = path.join(DATA_DIR, 'deleted.json');
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
@@ -371,7 +372,11 @@ const BUDGETS = {
   read: { limit: 120, windowMs: 60000 },
   write: { limit: 30, windowMs: 60000 },
   admin: { limit: 60, windowMs: 60000 },
-  reset: { limit: 6, windowMs: 60000 }   // each accepted reset can write a file
+  reset: { limit: 6, windowMs: 60000 },  // each accepted reset can write a file
+  // Failed admin logins only. The admin budget above is 60/min, which is a
+  // generous guessing allowance rather than a defence; this caps how many
+  // passwords one caller can actually try.
+  authfail: { limit: 5, windowMs: 60000 }
 };
 
 // One fixed window counter per caller and budget -- two numbers, so a caller
@@ -394,6 +399,15 @@ function rateLimited(ip, kind) {
   if (hits.size > MAX_TRACKED_IPS) evictStaleCallers(now);
 
   return bucket.count > budget.limit;
+}
+
+// rateLimited() counts the request it is asked about. Refusing a password
+// attempt has to be decided BEFORE the comparison happens, so this reads a
+// bucket without touching it.
+function overBudget(ip, kind) {
+  const bucket = hits.get(`${kind}\u0000${ip}`);
+  if (!bucket || Date.now() - bucket.start >= BUDGETS[kind].windowMs) return false;
+  return bucket.count >= BUDGETS[kind].limit;
 }
 
 // Drop expired buckets first; if the table is still full, drop the least
@@ -427,13 +441,109 @@ function clientIp(req) {
   return peer;
 }
 
+// Both halves of the admin surface: the JSON API and the page that drives it.
+const isAdminPage = (pathname) => pathname === '/admin' || pathname.startsWith('/admin/');
+const isAdminRoute = (pathname) => pathname.startsWith('/api/admin') || isAdminPage(pathname);
+
 function budgetFor(pathname, method) {
   if (pathname === '/api/admin/reset') return 'reset';
   if (pathname.startsWith('/api/admin')) return 'admin';
+  // The admin page is static but it is not public; without this it would
+  // draw the public read budget of 120/min.
+  if (isAdminPage(pathname)) return 'admin';
   return method === 'GET' || method === 'HEAD' ? 'read' : 'write';
 }
 
+// ------------------------------------------------------------ admin identity
+
+const sha256 = (value) => crypto.createHash('sha256').update(String(value), 'utf8').digest();
+
+// Digest both sides rather than comparing them directly. timingSafeEqual throws
+// on a length mismatch, and the length check that would avoid the throw leaks
+// how long the password is; two 32-byte digests always compare in constant time.
+function passwordMatches(given) {
+  return crypto.timingSafeEqual(sha256(given), sha256(ADMIN_PASSWORD));
+}
+
+// Only the password is checked, not the username. nginx's htpasswd checks both,
+// but a mismatch there would surface as a 401 with no way to tell which half was
+// wrong -- and the app has exactly one account, so the username carries nothing.
+function passwordFrom(req) {
+  const header = req.headers.authorization;
+  if (typeof header !== 'string') return null;
+  const space = header.indexOf(' ');
+  if (space === -1 || header.slice(0, space).toLowerCase() !== 'basic') return null;
+  let decoded;
+  try {
+    decoded = Buffer.from(header.slice(space + 1), 'base64').toString('utf8');
+  } catch {
+    return null;
+  }
+  const colon = decoded.indexOf(':');
+  return colon === -1 ? null : decoded.slice(colon + 1);
+}
+
+// With ADMIN_PASSWORD set the app defends itself and a reverse proxy in front is
+// defence in depth. With it unset the old arrangement still holds -- nginx does
+// the authenticating and proxies from this machine -- so a request that did NOT
+// arrive through something local is refused rather than trusted. That keeps the
+// deployed setup working untouched while closing the case this was really about:
+// `node server.js` on a public interface with no proxy at all.
+function adminAllowed(req, res, ip, pathname) {
+  const page = isAdminPage(pathname);
+
+  if (!ADMIN_PASSWORD) {
+    if (LOCAL_PEER.test(req.socket.remoteAddress || '')) return true;
+    sendRefusal(res, 403, page, 'The admin surface is not reachable from here.');
+    return false;
+  }
+
+  const challenge = { 'WWW-Authenticate': 'Basic realm="Typerider admin", charset="UTF-8"' };
+
+  // Arriving with no credential is not a guess: it reveals nothing and must not
+  // spend the budget, or a caller's own tooling could lock them out --
+  // `typerider-leaderboard check` knocks anonymously on purpose, to prove the
+  // door is shut. Anonymous callers are still metered by the admin budget above.
+  const given = passwordFrom(req);
+  if (given === null) {
+    sendRefusal(res, 401, page, 'Authentication required.', challenge);
+    return false;
+  }
+
+  // Decided before the comparison, so a caller gets a fixed number of guesses a
+  // minute whatever the answers are -- the right password is refused too once
+  // the budget is gone. Buckets key per IP, so a flood locks out only the
+  // flooder; do NOT "fix" this by moving auth above the rate limiter, which
+  // would hand an attacker unmetered guessing.
+  if (overBudget(ip, 'authfail')) {
+    sendRefusal(res, 429, page, 'Too many failed logins, wait a minute.',
+      { 'Retry-After': '60' });
+    return false;
+  }
+
+  if (passwordMatches(given)) return true;
+
+  rateLimited(ip, 'authfail');
+  sendRefusal(res, 401, page, 'Authentication required.', challenge);
+  return false;
+}
+
 // -------------------------------------------------------------------- plumbing
+
+// A browser asking for the admin page should not be handed raw JSON when it is
+// turned away, and the CLI should not have to parse prose. One refusal, rendered
+// as whatever the caller came for.
+function sendRefusal(res, status, page, message, headers = {}) {
+  if (!page) return sendJson(res, status, { error: message }, headers);
+  const body = message + '\n';
+  res.writeHead(status, {
+    'Content-Type': 'text/plain; charset=utf-8',
+    'Content-Length': Buffer.byteLength(body),
+    'Cache-Control': 'no-store',
+    ...headers
+  });
+  res.end(body);
+}
 
 function sendJson(res, status, payload, headers = {}) {
   const body = JSON.stringify(payload);
@@ -512,11 +622,18 @@ const server = http.createServer(async (req, res) => {
 
   res.setHeader('X-Content-Type-Options', 'nosniff');
 
-  if (url.pathname.startsWith('/api/') &&
-      rateLimited(ip, budgetFor(url.pathname, req.method))) {
-    sendJson(res, 429, { error: 'Too many requests, slow down.' }, { 'Retry-After': '60' });
+  // Meter the API and the admin page, and nothing else. Widening this to every
+  // path would meter the static shell too: one homepage load is eight requests,
+  // so the 120/min read budget would 429 a real visitor after fifteen of them.
+  const metered = url.pathname.startsWith('/api/') || isAdminPage(url.pathname);
+  if (metered && rateLimited(ip, budgetFor(url.pathname, req.method))) {
+    sendRefusal(res, 429, isAdminPage(url.pathname), 'Too many requests, slow down.',
+      { 'Retry-After': '60' });
     return;
   }
+
+  // Auth sits after the limiter on purpose: password attempts are metered.
+  if (isAdminRoute(url.pathname) && !adminAllowed(req, res, ip, url.pathname)) return;
 
   if (url.pathname === '/api/leaderboard' && req.method === 'GET') {
     const asked = Number(url.searchParams.get('limit'));
@@ -558,9 +675,10 @@ const server = http.createServer(async (req, res) => {
   }
 
   // --- admin ---------------------------------------------------------------
-  // Deliberately unauthenticated in here: nginx puts basic auth in front of
-  // typerider-leaderboard.zugriff.at and 404s /api/admin on the public vhost.
-  // Both halves are load-bearing — see DEPLOYMENT.md.
+  // Reached only through adminAllowed() above, so the handlers below can assume
+  // the caller is entitled to be here. In production nginx also puts basic auth
+  // in front of the admin vhost and 404s /api/admin on the public one; that is
+  // now defence in depth rather than the only lock — see DEPLOYMENT.md.
 
   if (url.pathname === '/api/admin/board' && req.method === 'GET') {
     sendJson(res, 200, {
@@ -650,4 +768,8 @@ loadSettings();
 server.listen(PORT, HOST, () => {
   console.log(`[typerider] listening on http://${HOST}:${PORT} ` +
     `(${board.entries.length} scores, board ${board.id}, top ${settings.leaderboardLimit})`);
+  if (!ADMIN_PASSWORD) {
+    console.log('[typerider] ADMIN_PASSWORD is not set: /admin and /api/admin ' +
+      'answer only to this machine. Set it, or keep a proxy in front.');
+  }
 });

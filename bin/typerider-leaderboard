@@ -13,9 +13,12 @@ const os = require('node:os');
 const path = require('node:path');
 const readline = require('node:readline/promises');
 
-const ADMIN_URL = process.env.TYPERIDER_ADMIN_URL || 'https://typerider-leaderboard.zugriff.at';
-const PUBLIC_URL = process.env.TYPERIDER_PUBLIC_URL || 'https://typerider.zugriff.at';
-const CONFIG_DIR = path.join(os.homedir(), '.config', 'typerider-leaderboard');
+// Nothing points at a particular deployment any more. A fresh install knows no
+// host at all and says which key to set; the two zugriff.at addresses that used
+// to live here are now just entries in one person's config file.
+const CONFIG_DIR = process.env.TYPERIDER_CONFIG_DIR ||
+  path.join(os.homedir(), '.config', 'typerider-leaderboard');
+const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 
 // ---------------------------------------------------------------------- args
 
@@ -38,9 +41,6 @@ try {
   process.exit(1);
 }
 
-const adminUrl = (opts['admin-url'] || ADMIN_URL).replace(/\/$/, '');
-const publicUrl = (opts['public-url'] || PUBLIC_URL).replace(/\/$/, '');
-
 const ESC = '\u001b';
 const COLOR = process.stdout.isTTY && !opts['no-color'] && !process.env.NO_COLOR;
 const c = (code, s) => (COLOR ? `${ESC}[${code}m${s}${ESC}[0m` : String(s));
@@ -48,6 +48,60 @@ const bold = (s) => c('1', s);
 const dim = (s) => c('2', s);
 const red = (s) => c('31', s);
 const green = (s) => c('32', s);
+
+// -------------------------------------------------------------------- config
+
+const CONFIG_KEYS = {
+  'admin.url': 'host serving /api/admin -- the admin vhost, or your single host',
+  'public.url': 'host visitors play on (default: same as admin.url)',
+  'admin.user': 'basic-auth username (default: admin)',
+  'admin.password-file': 'path to the admin password, plain or .gpg'
+};
+
+function readConfig() {
+  let raw;
+  try {
+    raw = fs.readFileSync(CONFIG_FILE, 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') return {};
+    throw err;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    fail(`${CONFIG_FILE} is not valid JSON: ${err.message}`);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    fail(`${CONFIG_FILE} does not hold a JSON object.`);
+  }
+  return parsed;
+}
+
+function writeConfig(cfg) {
+  fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+  // 600: admin.password-file records where a credential lives, and the host list
+  // alone is worth not leaving readable on a shared box.
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 });
+}
+
+const config = readConfig();
+const trimSlash = (s) => String(s).replace(/\/$/, '');
+
+// Flag, then environment, then config file. Nothing after that -- a missing host
+// is an error naming the key to set, not a silent fallback to somebody else's.
+const adminUrl = trimSlash(
+  opts['admin-url'] || process.env.TYPERIDER_ADMIN_URL || config['admin.url'] || '');
+// public.url stays optional: on a single-host deployment it IS admin.url, and
+// that is the shape someone running this for the first time has.
+const publicUrl = trimSlash(
+  opts['public-url'] || process.env.TYPERIDER_PUBLIC_URL || config['public.url'] || adminUrl);
+
+function requireUrl(url, key) {
+  if (url) return url;
+  fail(`no ${key} configured. Point this at your typerider:\n` +
+       `       typerider-leaderboard config set ${key} https://your-host`);
+}
 
 const USAGE = `typerider-leaderboard — administer the Typerider leaderboard
 
@@ -60,22 +114,34 @@ const USAGE = `typerider-leaderboard — administer the Typerider leaderboard
   archives                 boards that have been retired
   archive <board-id>       one retired board in full
   check                    reachability and access control; writes nothing
+  config [list|get|set|unset]   the host this talks to, and how it authenticates
 
 Options
   --json                   print the raw API response
   -y, --yes                skip the confirmation prompt on rm and reset
-  --admin-url <url>        default ${ADMIN_URL}
-  --public-url <url>       default ${PUBLIC_URL}
+  --admin-url <url>        override admin.url for this run
+  --public-url <url>       override public.url for this run
   --password-file <path>   read the admin password from this file
   --no-color               plain output
   -h, --help               this
 
-The admin password is looked up, in order: --password-file, $TYPERIDER_ADMIN_PASSWORD,
-~/.config/typerider-leaderboard/admin.pw.gpg (gpg prompts for the passphrase itself),
-then ~/.config/typerider-leaderboard/admin.pw. With none of those the tool runs
-unauthenticated, which is what you want against a local dev server:
+First run, against your own typerider:
 
-  typerider-leaderboard board --admin-url http://127.0.0.1:3999`;
+  typerider-leaderboard config set admin.url https://your-host
+  typerider-leaderboard check
+
+Settings live in ${CONFIG_FILE}:
+
+${Object.entries(CONFIG_KEYS).map(([k, d]) => `  ${k.padEnd(21)}${d}`).join('\n')}
+
+Set public.url only if visitors use a different host from the admin one, as they
+do behind a split-vhost proxy. The admin password is looked up, in order:
+--password-file, $TYPERIDER_ADMIN_PASSWORD, the admin.password-file key,
+then admin.pw.gpg or admin.pw in the config directory (gpg prompts for the
+passphrase itself). With none of those the tool sends no credential, which is
+what you want against a server that is not asking for one:
+
+  typerider-leaderboard board --admin-url http://127.0.0.1:3034`;
 
 // -------------------------------------------------------------------- output
 
@@ -128,6 +194,13 @@ function resolvePassword() {
   if (process.env.TYPERIDER_ADMIN_PASSWORD) {
     return (cachedPassword = process.env.TYPERIDER_ADMIN_PASSWORD);
   }
+  const configured = config['admin.password-file'];
+  if (configured) {
+    const file = configured.replace(/^~(?=\/|$)/, os.homedir());
+    if (!fs.existsSync(file)) fail(`admin.password-file points at a missing file: ${file}`);
+    return (cachedPassword = readPasswordFile(file));
+  }
+  // Unconfigured but conventional: the files this tool has always looked for.
   for (const name of ['admin.pw.gpg', 'admin.pw']) {
     const file = path.join(CONFIG_DIR, name);
     if (fs.existsSync(file)) return (cachedPassword = readPasswordFile(file));
@@ -138,7 +211,10 @@ function resolvePassword() {
 function authHeader() {
   const pw = resolvePassword();
   if (!pw) return null;
-  return 'Basic ' + Buffer.from(`admin:${pw}`).toString('base64');
+  // The app checks the password only, but nginx's htpasswd checks both halves,
+  // so whoever set that up needs to be able to say which name it expects.
+  const user = config['admin.user'] || 'admin';
+  return 'Basic ' + Buffer.from(`${user}:${pw}`).toString('base64');
 }
 
 // ----------------------------------------------------------------------- api
@@ -146,6 +222,7 @@ function authHeader() {
 let warnedNoCredential = false;
 
 async function api(route, { method = 'GET', body, auth = true, base = adminUrl } = {}) {
+  requireUrl(base, base === publicUrl && base !== adminUrl ? 'public.url' : 'admin.url');
   const headers = {};
   if (body !== undefined) headers['Content-Type'] = 'application/json';
 
@@ -176,14 +253,15 @@ async function api(route, { method = 'GET', body, auth = true, base = adminUrl }
 
   if (!res.ok) {
     if (res.status === 401) {
-      fail('401 — the admin password was rejected. Check ~/.config/typerider-leaderboard/,\n' +
-           '       or pass --password-file.');
+      fail('401 — the admin password was rejected. Check admin.password-file and\n' +
+           '       admin.user in `typerider-leaderboard config list`, or pass --password-file.');
     }
     // A 404 with no JSON body is nginx, not the app: almost always the admin
     // API being asked for on the public host, where it is blocked by design.
     if (res.status === 404 && !data && route.startsWith('/api/admin')) {
       fail(`404 from ${base}${route}\n` +
-           `       The admin API is blocked on the public host by design — use ${ADMIN_URL}.`);
+           '       Behind a split-vhost proxy the admin API is blocked on the public\n' +
+           '       host by design. Check that admin.url names the admin host.');
     }
     fail(`${res.status} ${res.statusText}${data && data.error ? ` — ${data.error}` : ''}`);
   }
@@ -396,9 +474,67 @@ async function cmdArchive(id) {
   });
 }
 
-// Reads only. Also asserts the two nginx rules the admin API leans on: the
-// public host must not expose /api/admin, and the admin host must demand a
-// password. A regression in either is silent until someone goes looking.
+async function cmdConfig(action = 'list', key, value) {
+  if (action === 'list') {
+    out(config, () => {
+      // Key and value only. A long password path would otherwise stretch the
+      // column and push the descriptions off the right of the terminal; --help
+      // is where they are explained.
+      const rows = Object.keys(CONFIG_KEYS).map((k) =>
+        [k, config[k] === undefined ? dim('(unset)') : config[k]]);
+      process.stdout.write(dim(CONFIG_FILE) + '\n\n' + table(['KEY', 'VALUE'], rows) +
+        '\n\n' + dim('`--help` says what each key is for.') + '\n');
+    });
+    return;
+  }
+  if (!['get', 'set', 'unset'].includes(action)) {
+    fail(`config takes list, get, set or unset — not "${action}".`);
+  }
+  if (!Object.prototype.hasOwnProperty.call(CONFIG_KEYS, key)) {
+    fail(`unknown key ${key ? `"${key}"` : ''}. Known keys:\n` +
+      Object.entries(CONFIG_KEYS).map(([k, d]) => `       ${k.padEnd(21)}${d}`).join('\n'));
+  }
+
+  if (action === 'get') {
+    if (config[key] === undefined) fail(`${key} is not set.`);
+    process.stdout.write(config[key] + '\n');
+    return;
+  }
+  if (action === 'unset') {
+    if (config[key] === undefined) fail(`${key} is not set.`);
+    delete config[key];
+    writeConfig(config);
+    process.stdout.write(`${green('Unset')} ${key}\n`);
+    return;
+  }
+  if (value === undefined) fail(`config set ${key} needs a value.`);
+
+  if (key.endsWith('.url')) {
+    // Catch a pasted URL that carries a path or a query now, with the mistake
+    // still in view. Stored unchecked it breaks every route at once, and the
+    // resulting 404s look like a server fault rather than a typo.
+    let parsed;
+    try { parsed = new URL(value); } catch { fail(`"${value}" is not a URL.`); }
+    if (!/^https?:$/.test(parsed.protocol)) fail(`${key} must be http or https.`);
+    if (parsed.pathname !== '/' || parsed.search || parsed.hash) {
+      fail(`${key} takes a host, without a path — try ${parsed.origin}`);
+    }
+    value = parsed.origin;
+  }
+
+  config[key] = value;
+  writeConfig(config);
+  process.stdout.write(`${green('Set')} ${key} = ${value}\n` + dim(CONFIG_FILE) + '\n');
+}
+
+// Reads only. The point is not that the server answers but that the admin
+// surface is shut to anyone without the password -- a regression there is
+// silent until someone goes looking.
+//
+// Two deployment shapes, told apart by whether the two hosts differ rather than
+// by a setting: on a split-vhost proxy the public host must not expose
+// /api/admin at all and the admin host must demand a password; on one host the
+// same property reduces to the admin API refusing an unauthenticated caller.
 async function cmdCheck() {
   const header = authHeader();
   const withAuth = header ? { headers: { Authorization: header } } : {};
@@ -412,12 +548,28 @@ async function cmdCheck() {
     }
   };
 
+  requireUrl(adminUrl, 'admin.url');
+  const splitHost = publicUrl !== adminUrl;
+
   const results = [
     await probe('public homepage', `${publicUrl}/`, {}, [200]),
     await probe('public leaderboard API', `${publicUrl}/api/leaderboard`, {}, [200]),
-    await probe('admin API blocked on public host', `${publicUrl}/api/admin/board`, {}, [404]),
-    await probe('admin page demands a password', `${adminUrl}/`, {}, [401]),
-    await probe('admin page with password', `${adminUrl}/`, withAuth, [200]),
+
+    ...(splitHost
+      ? [
+        await probe('admin API blocked on public host', `${publicUrl}/api/admin/board`, {}, [404]),
+        await probe('admin page demands a password', `${adminUrl}/`, {}, [401])
+      ]
+      // 403 counts: an app with no ADMIN_PASSWORD set refuses a caller that did
+      // not arrive through something local, which shuts the surface just as well.
+      : [
+        await probe('admin API refuses anonymous callers',
+          `${adminUrl}/api/admin/board`, {}, [401, 403, 404]),
+        await probe('admin page refuses anonymous callers',
+          `${adminUrl}/admin`, {}, [401, 403, 404])
+      ]),
+
+    await probe('admin page with password', `${adminUrl}${splitHost ? '/' : '/admin'}`, withAuth, [200]),
     await probe('admin API with password', `${adminUrl}/api/admin/board`, withAuth, [200])
   ];
 
@@ -439,7 +591,7 @@ async function main() {
     process.stdout.write(USAGE + '\n');
     return;
   }
-  const [command = 'board', arg] = positionals;
+  const [command = 'board', arg, arg2, arg3] = positionals;
 
   switch (command) {
     case 'board': case 'entries': return cmdBoard();
@@ -451,6 +603,7 @@ async function main() {
     case 'archives': return cmdArchives();
     case 'archive': return cmdArchive(arg);
     case 'check': return cmdCheck();
+    case 'config': return cmdConfig(arg, arg2, arg3);
     case 'help': process.stdout.write(USAGE + '\n'); return;
     default: fail(`unknown command "${command}".\n\n${USAGE}`);
   }
