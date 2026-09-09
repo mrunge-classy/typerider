@@ -57,7 +57,17 @@
 
   var modal = document.getElementById('story-modal');
   var closeBtn = document.getElementById('story-close');
+  var sheet = modal && modal.querySelector('.story-sheet');
   var lastFocus = null;
+
+  // Only claim there is more to read while there actually is: the fade would
+  // otherwise sit over the final line of a story that already fits.
+  function syncScrollHint() {
+    if (!sheet || modal.hidden) return;
+    var body = document.getElementById('story-text');
+    var left = body.scrollHeight - body.clientHeight - body.scrollTop;
+    sheet.classList.toggle('has-more', left > 4);
+  }
 
   function openStory(id) {
     var t = (window.TYPERIDER_TRACKS || []).find(function (x) { return x.id === id; });
@@ -80,6 +90,7 @@
     modal.hidden = false;
     document.body.classList.add('is-locked');
     closeBtn.focus();
+    syncScrollHint(); // after unhiding: a hidden sheet measures as zero
   }
 
   function closeStory() {
@@ -92,6 +103,9 @@
 
   if (modal) {
     closeBtn.addEventListener('click', closeStory);
+    document.getElementById('story-text').addEventListener('scroll', syncScrollHint, { passive: true });
+    // A phone toolbar sliding away, or a rotation, changes what fits.
+    window.addEventListener('resize', syncScrollHint);
     modal.addEventListener('click', function (ev) {
       if (ev.target.hasAttribute('data-close-story')) closeStory();
     });

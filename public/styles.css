@@ -313,7 +313,14 @@ table.rows tr.is-you td { background: var(--brand-soft); }
 
 /* ------------------------------------------------------------- story reader */
 
-.story-modal { position: fixed; inset: 0; z-index: 100; display: flex; }
+/* Height, not just `inset: 0`: a fixed box resolves against the large viewport
+   (mobile toolbars retracted), so its bottom edge hides behind the browser
+   chrome. `dvh` follows the viewport that is actually on screen. */
+.story-modal {
+  position: fixed; inset: 0; z-index: 100; display: flex;
+  height: 100vh;
+  height: 100dvh;
+}
 /* A class selector outranks the `hidden` attribute, so say it explicitly. */
 .story-modal[hidden] { display: none; }
 .story-backdrop {
@@ -327,6 +334,7 @@ table.rows tr.is-you td { background: var(--brand-soft); }
   margin: auto;
   width: min(38rem, 100% - 2rem);
   max-height: min(84vh, 44rem);
+  max-height: min(84dvh, 44rem);
   display: flex;
   flex-direction: column;
   background: var(--surface);
@@ -366,6 +374,22 @@ table.rows tr.is-you td { background: var(--brand-soft); }
   overscroll-behavior: contain;
 }
 .story-body:focus { outline: 0; }
+
+/* A line clipped by the scroll edge reads like the end of the story. The fade
+   is switched on from JS only while something is still below the fold, so a
+   story that fits shows no false "more" hint. */
+.story-sheet::after {
+  content: '';
+  position: absolute;
+  left: 1px; right: 1px; bottom: 1px;
+  height: 2.75rem;
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+  background: linear-gradient(to top, var(--surface) 35%, rgba(255, 255, 255, 0));
+  opacity: 0;
+  transition: opacity .15s ease;
+  pointer-events: none;
+}
+.story-sheet.has-more::after { opacity: 1; }
 .story-body p {
   margin: 0 0 .9rem;
   font-size: 1.06rem;
@@ -578,17 +602,21 @@ body.is-locked { overflow: hidden; }
   .story-sheet {
     width: 100%;
     margin: auto 0 0;
-    max-height: 88vh;
+    max-height: 92vh;
+    max-height: 92dvh;
     border-radius: var(--radius-lg) var(--radius-lg) 0 0;
     border-bottom: 0;
     animation: story-slide .2s ease;
   }
-  .story-head { padding: 1.3rem 1.25rem .9rem; padding-right: 3.2rem; }
+  .story-head { padding: 1.05rem 1.25rem .8rem; padding-right: 3.2rem; }
+  .story-head h2 { font-size: 1.25rem; }
   .story-body {
-    padding: 1.2rem 1.25rem 1.5rem;
+    padding: 1.1rem 1.25rem 1.5rem;
     padding-bottom: calc(1.5rem + env(safe-area-inset-bottom));
   }
-  .story-body p { font-size: 1.02rem; }
+  /* Tighter rhythm on phones so a six or seven line story fits outright and
+     the reader never has to scroll for one closing sentence. */
+  .story-body p { font-size: 1.02rem; line-height: 1.65; margin-bottom: .72rem; }
 }
 
 @keyframes story-slide { from { transform: translateY(100%); } }
