@@ -139,6 +139,24 @@
   </div>
 </footer>
 
+<!-- Story reader: filled and opened by home.js when a story card is clicked. -->
+<div class="story-modal" id="story-modal" hidden>
+  <div class="story-backdrop" data-close-story></div>
+  <div class="story-sheet" role="dialog" aria-modal="true" aria-labelledby="story-title">
+    <button class="story-close" id="story-close" type="button" aria-label="Close story">
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M6 6l12 12M18 6L6 18" />
+      </svg>
+    </button>
+    <div class="story-head">
+      <span class="story-lang" id="story-lang"></span>
+      <h2 id="story-title"></h2>
+      <p class="story-meta" id="story-meta"></p>
+    </div>
+    <div class="story-body" id="story-text" tabindex="-1"></div>
+  </div>
+</div>
+
 <script src="/tracks.js"></script>
 <script src="/home.js"></script>
 <script>

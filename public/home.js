@@ -30,17 +30,80 @@
     return '<div class="board-meta">Board started ' + esc(text) + '</div>';
   }
 
+  function trackMeta(t) {
+    return t.lines.length + ' lines · ' + t.lines.join(' ').length + ' characters';
+  }
+
+  // Buttons, not articles: the whole card opens the story, and a button gets
+  // keyboard and screen-reader behaviour for free.
   function renderTracks() {
     if (!tracksEl) return;
     tracksEl.innerHTML = (window.TYPERIDER_TRACKS || []).map(function (t) {
-      return '<article class="card track-card">' +
+      return '<button class="card track-card" type="button" data-track="' + esc(t.id) + '">' +
         '<span class="lang">' + esc(t.langLabel) + '</span>' +
         '<h3>' + esc(t.title) + '</h3>' +
         '<p>' + esc(t.blurb) + '</p>' +
-        '<span class="count">' + t.lines.length + ' lines · ' +
-        t.lines.join(' ').length + ' characters</span>' +
-        '</article>';
+        '<span class="count">' + trackMeta(t) + '<span class="read">Read story</span></span>' +
+        '</button>';
     }).join('');
+
+    tracksEl.addEventListener('click', function (ev) {
+      var card = ev.target.closest('.track-card');
+      if (card) openStory(card.dataset.track);
+    });
+  }
+
+  /* ------------------------------------------------------------ story reader */
+
+  var modal = document.getElementById('story-modal');
+  var closeBtn = document.getElementById('story-close');
+  var lastFocus = null;
+
+  function openStory(id) {
+    var t = (window.TYPERIDER_TRACKS || []).find(function (x) { return x.id === id; });
+    if (!t || !modal) return;
+
+    document.getElementById('story-lang').textContent = t.langLabel;
+    document.getElementById('story-title').textContent = t.title;
+    document.getElementById('story-meta').textContent = trackMeta(t);
+
+    // One paragraph per line: that is the shape you type it in, and it reads
+    // better than a wall of text on a phone.
+    var body = document.getElementById('story-text');
+    body.lang = t.lang;
+    body.innerHTML = t.lines.map(function (line) {
+      return '<p>' + esc(line) + '</p>';
+    }).join('');
+    body.scrollTop = 0;
+
+    lastFocus = document.activeElement;
+    modal.hidden = false;
+    document.body.classList.add('is-locked');
+    closeBtn.focus();
+  }
+
+  function closeStory() {
+    if (!modal || modal.hidden) return;
+    modal.hidden = true;
+    document.body.classList.remove('is-locked');
+    if (lastFocus && lastFocus.focus) lastFocus.focus();
+    lastFocus = null;
+  }
+
+  if (modal) {
+    closeBtn.addEventListener('click', closeStory);
+    modal.addEventListener('click', function (ev) {
+      if (ev.target.hasAttribute('data-close-story')) closeStory();
+    });
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Escape') { closeStory(); return; }
+      // The X is the sheet's only focusable element, so Tab stays on it
+      // instead of wandering into the page behind the overlay.
+      if (ev.key === 'Tab' && !modal.hidden) {
+        ev.preventDefault();
+        closeBtn.focus();
+      }
+    });
   }
 
   function renderBoard(data) {

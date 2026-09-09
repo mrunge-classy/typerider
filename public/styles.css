@@ -284,7 +284,19 @@ table.rows tr.is-you td { background: var(--brand-soft); }
 /* ---------------------------------------------------------------- variations */
 
 .tracks { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; }
-.track-card { padding: 1.4rem; display: flex; flex-direction: column; gap: .5rem; }
+.track-card {
+  padding: 1.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: transform .12s ease, border-color .12s ease, box-shadow .12s ease;
+}
+.track-card:hover { transform: translateY(-2px); border-color: var(--brand); }
+.track-card:focus-visible { outline: 2px solid var(--brand); outline-offset: 3px; }
 .track-card .lang {
   align-self: flex-start; font-size: .72rem; font-weight: 650; letter-spacing: .07em;
   text-transform: uppercase; color: var(--brand-dark); background: var(--brand-soft);
@@ -292,7 +304,84 @@ table.rows tr.is-you td { background: var(--brand-soft); }
 }
 .track-card h3 { font-size: 1.12rem; font-weight: 700; margin-top: .2rem; }
 .track-card p { margin: 0; color: var(--muted); font-size: .92rem; }
-.track-card .count { margin-top: auto; padding-top: .8rem; color: var(--muted); font-size: .82rem; font-family: var(--mono); }
+.track-card .count {
+  margin-top: auto; padding-top: .8rem; color: var(--muted); font-size: .82rem;
+  font-family: var(--mono); display: flex; align-items: baseline; justify-content: space-between; gap: .6rem;
+}
+.track-card .read { font-family: var(--sans); font-weight: 650; color: var(--brand); }
+.track-card:hover .read { color: var(--brand-dark); }
+
+/* ------------------------------------------------------------- story reader */
+
+.story-modal { position: fixed; inset: 0; z-index: 100; display: flex; }
+/* A class selector outranks the `hidden` attribute, so say it explicitly. */
+.story-modal[hidden] { display: none; }
+.story-backdrop {
+  position: absolute; inset: 0;
+  background: rgba(14, 21, 36, .55);
+  animation: story-fade .16s ease;
+}
+
+.story-sheet {
+  position: relative;
+  margin: auto;
+  width: min(38rem, 100% - 2rem);
+  max-height: min(84vh, 44rem);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 24px 60px -20px rgba(14, 21, 36, .5);
+  animation: story-rise .18s ease;
+}
+
+/* Subtle by default, only stated on hover — it should not compete with the
+   story it sits above. */
+.story-close {
+  position: absolute; top: .85rem; right: .85rem;
+  width: 2.1rem; height: 2.1rem; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 999px; background: transparent;
+  color: var(--muted); cursor: pointer;
+  transition: background .12s ease, color .12s ease;
+}
+.story-close svg { width: 1.05rem; height: 1.05rem; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; fill: none; }
+.story-close:hover { background: var(--bg-soft); color: var(--ink); }
+.story-close:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+
+.story-head { padding: 1.6rem 1.8rem 1rem; padding-right: 3.4rem; border-bottom: 1px solid var(--line); }
+.story-lang {
+  display: inline-block; font-size: .72rem; font-weight: 650; letter-spacing: .07em;
+  text-transform: uppercase; color: var(--brand-dark); background: var(--brand-soft);
+  padding: .2rem .55rem; border-radius: 999px;
+}
+.story-head h2 { font-size: 1.4rem; font-weight: 700; margin-top: .55rem; }
+.story-meta { margin: .35rem 0 0; color: var(--muted); font-size: .8rem; font-family: var(--mono); }
+
+.story-body {
+  padding: 1.5rem 1.8rem 1.9rem;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+.story-body:focus { outline: 0; }
+.story-body p {
+  margin: 0 0 .9rem;
+  font-size: 1.06rem;
+  line-height: 1.75;
+  color: var(--ink-soft);
+  text-wrap: pretty;
+}
+.story-body p:first-child { color: var(--ink); }
+.story-body p:last-child { margin-bottom: 0; }
+
+/* Locking the page behind the sheet: without it iOS scrolls the homepage
+   under the overlay once the story itself hits its end. */
+body.is-locked { overflow: hidden; }
+
+@keyframes story-fade { from { opacity: 0; } }
+@keyframes story-rise { from { opacity: 0; transform: translateY(12px); } }
 
 /* ----------------------------------------------------------------- how / faq */
 
@@ -483,7 +572,26 @@ table.rows tr.is-you td { background: var(--brand-soft); }
   .hero-note { align-items: flex-start; line-height: 1.5; }
   .pick { padding: .9rem 1rem; gap: .75rem; }
   .pick .meta { font-size: .72rem; }
+
+  /* Phones read the story as a bottom sheet: thumb-reachable close button,
+     and it grows only as tall as the story needs. */
+  .story-sheet {
+    width: 100%;
+    margin: auto 0 0;
+    max-height: 88vh;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    border-bottom: 0;
+    animation: story-slide .2s ease;
+  }
+  .story-head { padding: 1.3rem 1.25rem .9rem; padding-right: 3.2rem; }
+  .story-body {
+    padding: 1.2rem 1.25rem 1.5rem;
+    padding-bottom: calc(1.5rem + env(safe-area-inset-bottom));
+  }
+  .story-body p { font-size: 1.02rem; }
 }
+
+@keyframes story-slide { from { transform: translateY(100%); } }
 
 /* Touch devices get an explicit "next line" button, because a soft keyboard's
    return key is easy to miss and on some of them does not fire at all. */
