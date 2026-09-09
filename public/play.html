@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Play — Typerider</title>
+<meta name="description" content="Type seven short lines as fast as you can and take your place on the Typerider leaderboard.">
+<meta name="theme-color" content="#ffffff">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="/">
+      <span class="mark" aria-hidden="true">T</span>
+      <span class="word">Typerider</span>
+    </a>
+    <nav class="nav-links">
+      <a class="nav-link" href="/#leaderboard">Leaderboard</a>
+      <a class="nav-link" href="/">Home</a>
+    </nav>
+  </div>
+</header>
+
+<main class="play-main">
+
+  <!-- 1 · name ------------------------------------------------------------ -->
+  <section class="stage is-active" id="stage-name">
+    <div class="card panel">
+      <h1>What should we call you?</h1>
+      <p class="sub">Your name is how your run shows up on the leaderboard. Nothing else is stored.</p>
+      <div class="field">
+        <label for="name">Username</label>
+        <input id="name" type="text" maxlength="16" autocomplete="off" autocapitalize="off"
+               autocorrect="off" spellcheck="false" placeholder="2–16 characters">
+        <div class="suggestions" id="suggestions">
+          <span class="hint">Or take one of these:</span>
+        </div>
+        <p class="error" id="name-error" role="alert"></p>
+      </div>
+      <div class="btn-row">
+        <button class="btn" id="name-next" type="button">Continue →</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2 · story ----------------------------------------------------------- -->
+  <section class="stage" id="stage-track">
+    <div class="card panel">
+      <h1>Pick your story</h1>
+      <p class="sub">Three variations, six or seven short lines each. Two German, one English.</p>
+      <div class="picker" id="picker"></div>
+      <div class="btn-row">
+        <button class="btn btn-ghost" id="back-name" type="button">← Change name</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3 · game ------------------------------------------------------------ -->
+  <section class="stage" id="stage-game">
+    <div class="wrap" style="max-width:820px">
+      <div class="game-head">
+        <div class="game-title" id="game-title">—<span id="game-sub">—</span></div>
+        <div class="live">
+          <div><b id="live-wpm">0</b><span>WPM</span></div>
+          <div><b id="live-acc">100%</b><span>Accuracy</span></div>
+          <div><b id="live-time">0:00</b><span>Time</span></div>
+        </div>
+      </div>
+      <div class="progress" id="progress"></div>
+      <div class="card type-card">
+        <p class="prompt-line" id="prompt" lang="de"></p>
+        <input class="typing-input" id="typing" type="text" autocomplete="off" autocapitalize="off"
+               autocorrect="off" spellcheck="false" enterkeyhint="next" aria-label="Type the line above">
+        <div class="type-foot">
+          <span class="enter-hint">Press <span class="kbd">Enter</span> when the line is done.</span>
+          <span class="hint-msg" id="hint-msg" role="status"></span>
+          <button class="btn next-btn" id="next-line" type="button">Next line →</button>
+          <button class="btn btn-ghost" id="quit" type="button" style="padding:.5rem .9rem;font-size:.85rem">Give up</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4 · result ---------------------------------------------------------- -->
+  <section class="stage" id="stage-result">
+    <div class="card panel" style="padding:0">
+      <div class="result-hero">
+        <p class="who" id="result-who">—</p>
+        <div class="result-wpm"><span id="result-wpm">0</span><small>WPM</small></div>
+        <div class="result-stats">
+          <div><b id="result-acc">100%</b><span>Accuracy</span></div>
+          <div><b id="result-time">0:00</b><span>Time</span></div>
+          <div><b id="result-chars">0</b><span>Characters</span></div>
+        </div>
+        <p class="result-mistakes" id="result-mistakes"></p>
+        <div><span class="result-badge" id="result-badge">—</span></div>
+      </div>
+      <div class="result-actions">
+        <button class="btn" id="again" type="button">Ride again</button>
+        <a class="btn btn-ghost" href="/#leaderboard" style="text-decoration:none">See the leaderboard</a>
+      </div>
+      <div id="result-board"></div>
+    </div>
+  </section>
+
+</main>
+
+<script src="/tracks.js"></script>
+<script src="/game.js"></script>
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+  }
+</script>
+</body>
+</html>

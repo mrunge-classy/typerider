@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Typerider — how fast do you really type?</title>
+<meta name="description" content="Typerider is a small typing speed test: seven short lines, three stories, one score. Two German runs, one English. Beat the leaderboard.">
+<meta name="theme-color" content="#ffffff">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<link rel="stylesheet" href="/styles.css">
+<meta property="og:title" content="Typerider — how fast do you really type?">
+<meta property="og:description" content="Seven short lines. Three stories. One score.">
+<meta property="og:type" content="website">
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="/">
+      <span class="mark" aria-hidden="true">T</span>
+      <span class="word">Typerider</span>
+    </a>
+    <nav class="nav-links">
+      <a class="nav-link" href="#leaderboard">Leaderboard</a>
+      <a class="nav-link" href="#variations">Stories</a>
+      <a class="nav-link" href="#how">How it works</a>
+      <a class="btn-play" href="/play">PLAY NOW <span class="arrow" aria-hidden="true">→</span></a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <section class="hero">
+    <div class="wrap hero-grid">
+      <div>
+        <span class="eyebrow">Typing speed test</span>
+        <h1>Seven short lines.<br>One honest <em>WPM</em>.</h1>
+        <p class="lede">
+          Most people guess their typing speed and guess too high. Typerider settles it in
+          about a minute: you type a handful of short sentences, hit Enter after each one,
+          and get a number you can actually defend — words per minute and accuracy, no fluff.
+        </p>
+        <p class="hero-note">
+          <span class="arrow-up" aria-hidden="true">↗</span>
+          <span>Ready? The only way in is the <b>PLAY&nbsp;NOW</b> button, top right.</span>
+        </p>
+        <div class="facts">
+          <div class="fact"><strong>3</strong><span>story variations</span></div>
+          <div class="fact"><strong>≤ 7</strong><span>lines per run</span></div>
+          <div class="fact"><strong id="fact-players">–</strong><span>riders ranked</span></div>
+        </div>
+      </div>
+
+      <div class="demo" aria-hidden="true">
+        <div class="demo-head">
+          <span class="dots"><i></i><i></i><i></i></span>
+          <span>line 2 / 7 · Der Nachtzug</span>
+        </div>
+        <p class="demo-line">
+          <span class="ok">Draußen lag Nebel </span><span class="caret"></span><span class="rest">über den Feldern.</span>
+        </p>
+        <div class="demo-foot">
+          <span>WPM <b>72</b></span>
+          <span>Accuracy <b>98%</b></span>
+          <span>Time <b>0:24</b></span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="leaderboard">
+    <div class="wrap">
+      <div class="section-head">
+        <div>
+          <h2>Leaderboard</h2>
+          <p>Fastest run per rider since this board started. One name, one entry — beat your own record to move up.</p>
+        </div>
+      </div>
+      <div class="card board" id="board">
+        <div class="board-empty">Loading the board…</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="variations">
+    <div class="wrap">
+      <div class="section-head">
+        <div>
+          <h2>Three stories to ride</h2>
+          <p>Pick one after you enter your name. Two in German, one in English.</p>
+        </div>
+      </div>
+      <div class="tracks" id="tracks"></div>
+    </div>
+  </section>
+
+  <section class="section" id="how">
+    <div class="wrap">
+      <div class="section-head">
+        <div>
+          <h2>How it works</h2>
+          <p>No account, no e-mail, no cookie banner. Just a name and your fingers.</p>
+        </div>
+      </div>
+      <div class="steps">
+        <div class="card step">
+          <div class="n">1</div>
+          <h3>Pick a name</h3>
+          <p>Type one or take one of the three suggestions. It's the only thing we store.</p>
+        </div>
+        <div class="card step">
+          <div class="n">2</div>
+          <h3>Choose a story</h3>
+          <p>Der Nachtzug, Kaffee um sieben or The Lighthouse Keeper — six or seven lines each.</p>
+        </div>
+        <div class="card step">
+          <div class="n">3</div>
+          <h3>Type, then Enter</h3>
+          <p>The clock starts on your first keystroke. Enter sends the line and pulls up the next.</p>
+        </div>
+        <div class="card step">
+          <div class="n">4</div>
+          <h3>Take your rank</h3>
+          <p>WPM counts five characters as one word. Accuracy is measured per character.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <span>Typerider — a small typing game at typerider.zugriff.at</span>
+    <span class="install-hint">Tip: install it from your browser menu to play full-screen on your phone.</span>
+  </div>
+</footer>
+
+<script src="/tracks.js"></script>
+<script src="/home.js"></script>
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+  }
+</script>
+</body>
+</html>

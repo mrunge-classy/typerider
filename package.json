@@ -1,0 +1,20 @@
+{
+  "name": "typerider",
+  "version": "1.0.0",
+  "description": "Typerider — a dependency-free typing speed game with a leaderboard (typerider.zugriff.at)",
+  "homepage": "https://typerider.zugriff.at",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mrunge-classy/typerider.git"
+  },
+  "license": "MIT",
+  "keywords": ["typing", "typing-test", "wpm", "game", "leaderboard", "pwa", "zero-dependency"],
+  "type": "commonjs",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

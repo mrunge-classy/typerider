@@ -1,0 +1,14 @@
+node_modules/
+
+# Runtime state: leaderboard, deleted rows, settings, archived boards.
+data/
+
+# Local working notes and the real deployment runbook (server address,
+# credentials location, port map) — deliberately not published.
+DEPLOYMENT.md
+prompt
+clone
+api
+sales
+settings
+stylelib

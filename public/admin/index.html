@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Typerider — leaderboard admin</title>
+<meta name="robots" content="noindex, nofollow">
+<!-- Self-contained on purpose: the admin vhost rewrites / to /admin/, so a
+     relative asset would resolve one level too deep. No external files. -->
+<style>
+:root {
+  --bg: #F4F6FB; --surface: #FFFFFF; --bg-soft: #EDF1FA;
+  --ink: #0E1524; --muted: #6B7488; --line: #E3E8F3;
+  --brand: #4F46E5; --bad: #E11D48; --gold: #E9A100;
+  --radius: 14px;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); font-size: 15px; line-height: 1.55; }
+.wrap { max-width: 1040px; margin: 0 auto; padding: 0 1.25rem; }
+
+header.bar { background: var(--surface); border-bottom: 1px solid var(--line); box-shadow: 0 1px 0 rgba(14,21,36,.05); }
+.bar-inner { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .9rem 0; flex-wrap: wrap; }
+.brand { display: flex; align-items: center; gap: .6rem; font-weight: 700; letter-spacing: -.015em; }
+.mark { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 9px; background: var(--brand); color: #fff; font-weight: 800; }
+.tag { font-size: .72rem; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); font-weight: 650; }
+.bar a { color: var(--brand); text-decoration: none; font-weight: 600; font-size: .9rem; }
+
+main { padding: 1.75rem 0 4rem; }
+section { margin-bottom: 2rem; }
+h1 { font-size: 1.4rem; margin: 0 0 .25rem; letter-spacing: -.02em; }
+h2 { font-size: 1rem; margin: 0 0 .7rem; letter-spacing: .01em; }
+p.sub { color: var(--muted); margin: 0 0 1.1rem; }
+
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: .75rem; margin-bottom: 1.5rem; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 1rem 1.15rem; }
+.card .label { font-size: .72rem; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); font-weight: 650; }
+.card .value { font-size: 1.25rem; font-weight: 700; letter-spacing: -.015em; margin-top: .15rem; overflow-wrap: anywhere; }
+.card .value.id { font-family: var(--mono); font-size: .82rem; font-weight: 500; }
+
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; font-size: .72rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 650; padding: .7rem 1rem; border-bottom: 1px solid var(--line); white-space: nowrap; }
+td { padding: .7rem 1rem; border-bottom: 1px solid var(--line); font-size: .9rem; vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.rank { width: 3rem; color: var(--muted); font-family: var(--mono); }
+.name { font-weight: 600; overflow-wrap: anywhere; }
+.when { color: var(--muted); white-space: nowrap; font-size: .85rem; }
+.pill { display: inline-block; font-size: .72rem; color: var(--muted); background: var(--bg-soft); border-radius: 999px; padding: .12rem .5rem; }
+code, .id-cell { font-family: var(--mono); font-size: .78rem; }
+.id-cell { color: var(--muted); user-select: all; cursor: text; }
+.empty { padding: 1.75rem 1rem; text-align: center; color: var(--muted); }
+.gold { color: var(--gold); }
+
+pre { margin: 0; padding: 1rem 1.15rem; background: #0E1524; color: #E7EAF3; border-radius: var(--radius); overflow-x: auto; font-family: var(--mono); font-size: .8rem; line-height: 1.65; }
+pre b { color: #A5B4FC; font-weight: 600; }
+.note { color: var(--muted); font-size: .86rem; margin: .6rem 0 0; }
+.err { background: #FFF1F4; border: 1px solid #FBC9D4; color: #9F1239; border-radius: var(--radius); padding: 1rem 1.15rem; }
+</style>
+</head>
+<body>
+
+<header class="bar">
+  <div class="wrap bar-inner">
+    <span class="brand"><span class="mark" aria-hidden="true">T</span> Typerider <span class="tag">leaderboard admin</span></span>
+    <a href="https://typerider.zugriff.at" rel="noopener">typerider.zugriff.at ↗</a>
+  </div>
+</header>
+
+<main class="wrap">
+  <h1>Live board</h1>
+  <p class="sub">Read-only. Changes are made with the <code>curl</code> commands at the bottom of the page.</p>
+  <div id="app"><div class="panel"><div class="empty">Loading…</div></div></div>
+</main>
+
+<script>
+(function () {
+  'use strict';
+
+  var app = document.getElementById('app');
+
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+
+  function date(ms) {
+    if (!ms) return '—';
+    return new Date(ms).toLocaleString('en-GB', {
+      day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
+    });
+  }
+
+  function panel(title, body) {
+    return '<section><h2>' + esc(title) + '</h2><div class="panel">' + body + '</div></section>';
+  }
+
+  function empty(text) {
+    return '<div class="empty">' + esc(text) + '</div>';
+  }
+
+  function entriesTable(entries) {
+    if (!entries.length) return empty('The board is empty.');
+    return '<div class="scroll"><table><thead><tr>' +
+      '<th class="rank">#</th><th>Rider</th><th>Story</th>' +
+      '<th class="num">Accuracy</th><th class="num">WPM</th><th>Played</th><th>Entry id</th>' +
+      '</tr></thead><tbody>' +
+      entries.map(function (e) {
+        return '<tr>' +
+          '<td class="rank">' + (e.rank === 1 ? '<span class="gold">★</span> ' : '') + e.rank + '</td>' +
+          '<td class="name">' + esc(e.name) + '</td>' +
+          '<td><span class="pill">' + esc(e.track || '—') + '</span></td>' +
+          '<td class="num">' + Number(e.accuracy).toFixed(0) + '%</td>' +
+          '<td class="num"><b>' + Number(e.wpm).toFixed(1) + '</b></td>' +
+          '<td class="when">' + esc(date(e.playedAt)) + '</td>' +
+          '<td class="id-cell">' + esc(e.id || '—') + '</td>' +
+        '</tr>';
+      }).join('') +
+      '</tbody></table></div>';
+  }
+
+  function deletedTable(rows) {
+    if (!rows.length) return empty('Nothing has been removed from a board yet.');
+    return '<div class="scroll"><table><thead><tr>' +
+      '<th>Rider</th><th class="num">WPM</th><th>Removed</th><th>From board</th><th>Board started</th>' +
+      '</tr></thead><tbody>' +
+      rows.slice().sort(function (a, b) { return b.deletedAt - a.deletedAt; }).map(function (d) {
+        var e = d.entry || {};
+        return '<tr>' +
+          '<td class="name">' + esc(e.name || '—') + '</td>' +
+          '<td class="num">' + (e.wpm == null ? '—' : Number(e.wpm).toFixed(1)) + '</td>' +
+          '<td class="when">' + esc(date(d.deletedAt)) + '</td>' +
+          '<td class="id-cell">' + esc(d.boardId || '—') + '</td>' +
+          '<td class="when">' + esc(date(d.boardCreatedAt)) + '</td>' +
+        '</tr>';
+      }).join('') +
+      '</tbody></table></div>';
+  }
+
+  function archivesTable(rows) {
+    if (!rows.length) return empty('No board has been reset yet.');
+    return '<div class="scroll"><table><thead><tr>' +
+      '<th>Started</th><th class="num">Riders</th><th>Board id</th><th>File</th>' +
+      '</tr></thead><tbody>' +
+      rows.map(function (a) {
+        return '<tr>' +
+          '<td class="when">' + esc(date(a.createdAt)) + '</td>' +
+          '<td class="num">' + a.entries + '</td>' +
+          '<td class="id-cell">' + esc(a.id) + '</td>' +
+          '<td class="id-cell">' + esc(a.file) + '</td>' +
+        '</tr>';
+      }).join('') +
+      '</tbody></table></div>';
+  }
+
+  function commands(data) {
+    var origin = window.location.origin;
+    var sample = (data.entries[0] && data.entries[0].id) || '<ENTRY-ID>';
+    return '<section><h2>Making changes</h2><pre>' +
+      '<b># remove one rider (moved to deleted.json, not erased)</b>\n' +
+      'curl -u admin -X DELETE "' + esc(origin) + '/api/admin/entry?id=' + esc(sample) + '"\n\n' +
+      '<b># start a fresh board (the current one is archived whole)</b>\n' +
+      'curl -u admin -X POST "' + esc(origin) + '/api/admin/reset"\n\n' +
+      '<b># how many rows the homepage shows (3-50)</b>\n' +
+      'curl -u admin -X POST "' + esc(origin) + '/api/admin/settings" \\\n' +
+      '     -H "Content-Type: application/json" -d \'{"leaderboardLimit": 10}\'\n\n' +
+      '<b># read an archived board back</b>\n' +
+      'curl -u admin "' + esc(origin) + '/api/admin/archive?id=&lt;BOARD-ID&gt;"' +
+      '</pre>' +
+      '<p class="note">Entry ids are in the last column above — select one to copy it. ' +
+      '<code>-u admin</code> prompts for the password. Removing a rider does not ban them: ' +
+      'they reappear if they play again.</p></section>';
+  }
+
+  function render(data) {
+    var head = '<div class="cards">' +
+      '<div class="card"><div class="label">Board started</div><div class="value">' + esc(date(data.board.createdAt)) + '</div></div>' +
+      '<div class="card"><div class="label">Riders ranked</div><div class="value">' + data.players + '</div></div>' +
+      '<div class="card"><div class="label">Rows on homepage</div><div class="value">' + data.settings.leaderboardLimit + '</div></div>' +
+      '<div class="card"><div class="label">Board id</div><div class="value id">' + esc(data.board.id) + '</div></div>' +
+      '</div>';
+
+    app.innerHTML = head +
+      panel('Entries (' + data.entries.length + ')', entriesTable(data.entries)) +
+      panel('Removed riders (' + data.deleted.length + ')', deletedTable(data.deleted)) +
+      panel('Archived boards (' + data.archives.length + ')', archivesTable(data.archives)) +
+      commands(data);
+  }
+
+  fetch('/api/admin/board', { cache: 'no-store' })
+    .then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(render)
+    .catch(function (err) {
+      app.innerHTML = '<div class="err"><b>Could not load the board.</b> ' + esc(err.message) +
+        ' — check that the Typerider process is up and that this vhost proxies <code>/api/</code> through.</div>';
+    });
+})();
+</script>
+</body>
+</html>
