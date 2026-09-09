@@ -317,7 +317,10 @@ async function cmdReset() {
 
   const data = await api('/api/admin/reset', { method: 'POST' });
   out(data, () => process.stdout.write(
-    `${green('Archived')} ${data.archivedEntries} rider(s) to ${data.archived}\n` +
+    (data.archived
+      ? `${green('Archived')} ${data.archivedEntries} rider(s) to ${data.archived}\n`
+      : `${green('Reset')} — the board was empty, so nothing was archived.\n`) +
+    (data.pruned ? dim(`Pruned ${data.pruned} archive(s) beyond the 50 kept.\n`) : '') +
     `New board ${data.board.id}, started ${when(data.board.createdAt)}.\n`));
 }
 

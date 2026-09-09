@@ -342,6 +342,7 @@
         $('result-badge').textContent = b.rank
           ? (b.improved ? 'New personal best — rank #' + b.rank + ' on the board.'
                         : 'Currently rank #' + b.rank + '. Your best still stands.')
+          : b.full ? 'The board is full — beat the slowest rider on it to take a seat.'
           : (b.improved ? 'New personal best — keep pushing for the top ten.'
                         : 'Not your best run. Your record still stands.');
         renderMiniBoard(b.entries || []);

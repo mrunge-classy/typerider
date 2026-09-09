@@ -19,6 +19,16 @@ const DEFAULT_LIMIT = 10;
 const MIN_LIMIT = 3;
 const MAX_LIMIT = 50;
 
+// Abuse ceilings. Everything the API can create is held in memory and mirrored
+// to disk, so every collection that a request can grow needs a bound that does
+// not depend on the caller behaving. A board only ever shows MAX_LIMIT rows, so
+// keeping 500 is already far more history than the game needs.
+const MAX_ENTRIES = 500;                    // rows on the live board
+const MAX_DELETED = 200;                    // admin-removed riders retained
+const MAX_ARCHIVES = 50;                    // past boards kept on disk
+const MAX_ARCHIVE_BYTES = 8 * 1024 * 1024;  // an archive larger than this is not read
+const MAX_TRACKED_IPS = 5000;               // rate-limiter table size
+
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
@@ -45,6 +55,7 @@ let board = newBoard();
 let deleted = [];
 let settings = { leaderboardLimit: DEFAULT_LIMIT };
 let writeQueue = Promise.resolve();
+let pendingWrites = new Map();
 
 function newBoard() {
   return { id: crypto.randomUUID(), createdAt: Date.now(), entries: [] };
@@ -63,12 +74,26 @@ function readJson(file) {
 
 // Every write goes through the one queue, so a burst of scores and an admin
 // action can never interleave into a half-written file.
+//
+// Writes to the same file coalesce: only the newest value is kept, and it is
+// serialized when its turn comes rather than when it was queued. A flood of
+// accepted scores therefore costs one pending snapshot, not one per request --
+// queueing a full copy of the board per POST was itself a way to run the
+// process out of memory.
 function writeJson(file, value) {
-  const snapshot = JSON.stringify(value, null, 2);
+  const first = !pendingWrites.has(file);
+  pendingWrites.set(file, value);
+  if (!first) return writeQueue;
+
   writeQueue = writeQueue.then(async () => {
+    if (!pendingWrites.has(file)) return;
+    const queued = pendingWrites.get(file);
+    // Claim it before any await: whatever arrives from here on is a new write
+    // that queues its own flush.
+    pendingWrites.delete(file);
     const tmp = file + '.tmp';
     await fsp.mkdir(path.dirname(file), { recursive: true });
-    await fsp.writeFile(tmp, snapshot, 'utf8');
+    await fsp.writeFile(tmp, JSON.stringify(queued, null, 2), 'utf8');
     await fsp.rename(tmp, file);
   }).catch((err) => {
     console.error(`[typerider] could not write ${path.basename(file)}:`, err.message);
@@ -117,12 +142,28 @@ function loadScores() {
       backfilled = true;
     }
   }
-  if (legacy || backfilled) persistScores();
+
+  // A file written before the cap existed (or edited by hand) is trimmed to the
+  // fastest MAX_ENTRIES riders rather than loaded whole.
+  let trimmed = false;
+  if (board.entries.length > MAX_ENTRIES) {
+    const dropped = board.entries.length - MAX_ENTRIES;
+    board.entries = board.entries
+      .slice()
+      .sort((a, b) => b.wpm - a.wpm || b.accuracy - a.accuracy || a.playedAt - b.playedAt)
+      .slice(0, MAX_ENTRIES);
+    trimmed = true;
+    console.warn(`[typerider] scores.json held more than ${MAX_ENTRIES} rows; dropped ${dropped}`);
+  }
+
+  if (legacy || backfilled || trimmed) persistScores();
 }
 
 function loadDeleted() {
   const parsed = readJson(DELETED_FILE);
-  if (Array.isArray(parsed)) deleted = parsed;
+  if (!Array.isArray(parsed)) return;
+  deleted = parsed.slice(-MAX_DELETED);
+  if (deleted.length < parsed.length) persistDeleted();
 }
 
 function loadSettings() {
@@ -162,36 +203,78 @@ function deleteEntry(id) {
     boardCreatedAt: board.createdAt,
     deletedAt: Date.now()
   });
+  // The removal log is a log, not an archive: past MAX_DELETED the oldest go.
+  if (deleted.length > MAX_DELETED) deleted.splice(0, deleted.length - MAX_DELETED);
   persistScores();
   persistDeleted();
   return entry;
 }
 
-function resetBoard() {
+// Resetting an empty board writes nothing: without that, a loop of resets is a
+// way to fill the disk (and, through listArchives, the heap) with empty boards.
+async function resetBoard() {
   const previous = board;
-  const file = archiveName(previous);
-  writeJson(path.join(ARCHIVE_DIR, file), previous);
   board = newBoard();
   persistScores();
-  return { archived: file, archivedEntries: previous.entries.length };
+
+  if (!previous.entries.length) {
+    await writeQueue;
+    return { archived: null, archivedEntries: 0 };
+  }
+
+  const file = archiveName(previous);
+  writeJson(path.join(ARCHIVE_DIR, file), previous);
+  await writeQueue;
+  const pruned = await pruneArchives();
+  return { archived: file, archivedEntries: previous.entries.length, pruned };
 }
 
-async function listArchives() {
+async function archiveFiles() {
   let files = [];
   try {
     files = await fsp.readdir(ARCHIVE_DIR);
   } catch (err) {
     if (err.code !== 'ENOENT') throw err;
   }
-  return files
-    .filter((f) => f.endsWith('.json'))
-    .map((file) => {
-      const data = readJson(path.join(ARCHIVE_DIR, file));
-      if (!data || !Array.isArray(data.entries)) return null;
-      return { id: data.id, createdAt: data.createdAt, entries: data.entries.length, file };
-    })
-    .filter(Boolean)
-    .sort((a, b) => b.createdAt - a.createdAt);
+  // The name carries the board's start time, so a plain descending sort is
+  // newest-first without opening a single file.
+  return files.filter((f) => /^board-.+\.json$/.test(f)).sort().reverse();
+}
+
+// Keep the newest MAX_ARCHIVES boards; older ones are deleted from disk.
+async function pruneArchives() {
+  const stale = (await archiveFiles()).slice(MAX_ARCHIVES);
+  for (const file of stale) {
+    try {
+      await fsp.unlink(path.join(ARCHIVE_DIR, file));
+    } catch (err) {
+      if (err.code !== 'ENOENT') console.error(`[typerider] could not prune ${file}:`, err.message);
+    }
+  }
+  return stale.length;
+}
+
+// Reads at most MAX_ARCHIVES files, and skips any single file that is too big
+// to be a board this server wrote, so listing archives has a fixed cost even if
+// something dropped a huge JSON file into the directory.
+async function listArchives() {
+  const files = (await archiveFiles()).slice(0, MAX_ARCHIVES);
+  const out = [];
+  for (const file of files) {
+    const full = path.join(ARCHIVE_DIR, file);
+    try {
+      if ((await fsp.stat(full)).size > MAX_ARCHIVE_BYTES) {
+        console.warn(`[typerider] skipping oversized archive ${file}`);
+        continue;
+      }
+    } catch {
+      continue;
+    }
+    const data = readJson(full);
+    if (!data || !Array.isArray(data.entries)) continue;
+    out.push({ id: data.id, createdAt: data.createdAt, entries: data.entries.length, file });
+  }
+  return out.sort((a, b) => b.createdAt - a.createdAt);
 }
 
 async function readArchive(id) {
@@ -244,42 +327,121 @@ function validateRun(body) {
   };
 }
 
+// The slowest rider on the board -- the one a full board gives up first.
+function slowestIndex() {
+  let worst = 0;
+  for (let i = 1; i < board.entries.length; i++) {
+    const a = board.entries[i];
+    const b = board.entries[worst];
+    if (a.wpm < b.wpm || (a.wpm === b.wpm && a.accuracy < b.accuracy)) worst = i;
+  }
+  return worst;
+}
+
+// One row per name, and never more than MAX_ENTRIES rows. A new name on a full
+// board has to beat the slowest rider to get a seat, which is what stops an
+// attacker from minting unlimited usernames to grow the board without end.
 function recordRun(run) {
   const existing = board.entries.find((s) => s.name.toLowerCase() === run.name.toLowerCase());
-  let improved = true;
-  if (!existing) {
-    board.entries.push(run);
-  } else if (run.wpm > existing.wpm) {
+
+  if (existing) {
+    if (run.wpm <= existing.wpm) return { improved: false, full: false };
     // Keep the row's id so anything already referencing it still resolves.
     Object.assign(existing, run, { id: existing.id });
-  } else {
-    improved = false;
+    persistScores();
+    return { improved: true, full: false };
   }
-  if (improved) persistScores();
-  return improved;
+
+  if (board.entries.length >= MAX_ENTRIES) {
+    const i = slowestIndex();
+    if (run.wpm <= board.entries[i].wpm) return { improved: false, full: true };
+    board.entries[i] = run;
+  } else {
+    board.entries.push(run);
+  }
+  persistScores();
+  return { improved: true, full: false };
 }
 
 // --------------------------------------------------------------- rate limiting
 
+// Every /api/ route is metered, not just score submission: reading the board is
+// cheap but not free, and the admin routes touch the disk.
+const BUDGETS = {
+  read: { limit: 120, windowMs: 60000 },
+  write: { limit: 30, windowMs: 60000 },
+  admin: { limit: 60, windowMs: 60000 },
+  reset: { limit: 6, windowMs: 60000 }   // each accepted reset can write a file
+};
+
+// One fixed window counter per caller and budget -- two numbers, so a caller
+// hammering the API cannot make its own bucket grow (the old limiter appended a
+// timestamp per request, including the ones it had already rejected).
 const hits = new Map();
 
-function rateLimited(ip, limit = 30, windowMs = 60000) {
+function rateLimited(ip, kind) {
+  const budget = BUDGETS[kind];
+  const key = `${kind}\u0000${ip}`;
   const now = Date.now();
-  const bucket = (hits.get(ip) || []).filter((t) => now - t < windowMs);
-  bucket.push(now);
-  hits.set(ip, bucket);
-  if (hits.size > 5000) hits.clear();
-  return bucket.length > limit;
+
+  let bucket = hits.get(key);
+  if (!bucket || now - bucket.start >= budget.windowMs) bucket = { start: now, count: 0 };
+  bucket.count++;
+
+  // Re-insert so Map iteration order stays least-recently-seen first.
+  hits.delete(key);
+  hits.set(key, bucket);
+  if (hits.size > MAX_TRACKED_IPS) evictStaleCallers(now);
+
+  return bucket.count > budget.limit;
+}
+
+// Drop expired buckets first; if the table is still full, drop the least
+// recently seen tenth. Never clear the whole table -- that used to hand every
+// attacker in a flood a fresh budget.
+const LONGEST_WINDOW = Math.max(...Object.values(BUDGETS).map((b) => b.windowMs));
+
+function evictStaleCallers(now) {
+  for (const [key, bucket] of hits) {
+    if (now - bucket.start >= LONGEST_WINDOW) hits.delete(key);
+  }
+  if (hits.size <= MAX_TRACKED_IPS) return;
+  let drop = Math.ceil(MAX_TRACKED_IPS / 10);
+  for (const key of hits.keys()) {
+    hits.delete(key);
+    if (--drop <= 0) break;
+  }
+}
+
+// nginx sets X-Real-IP; a client cannot be allowed to. Trust the header only
+// when the connection itself came from the loopback/private side, which is
+// where the reverse proxy sits, and never key the table on an unbounded string.
+const LOCAL_PEER = /^(::1|::ffff:127\.|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|f[cd])/i;
+
+function clientIp(req) {
+  const peer = req.socket.remoteAddress || 'unknown';
+  const header = req.headers['x-real-ip'];
+  if (typeof header === 'string' && header && LOCAL_PEER.test(peer)) {
+    return header.split(',')[0].trim().slice(0, 45) || peer;
+  }
+  return peer;
+}
+
+function budgetFor(pathname, method) {
+  if (pathname === '/api/admin/reset') return 'reset';
+  if (pathname.startsWith('/api/admin')) return 'admin';
+  return method === 'GET' || method === 'HEAD' ? 'read' : 'write';
 }
 
 // -------------------------------------------------------------------- plumbing
 
-function sendJson(res, status, payload) {
+function sendJson(res, status, payload, headers = {}) {
   const body = JSON.stringify(payload);
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': Buffer.byteLength(body),
-    'Cache-Control': 'no-store'
+    'Cache-Control': 'no-store',
+    ...headers
   });
   res.end(body);
 }
@@ -346,9 +508,15 @@ function serveStatic(req, res, urlPath) {
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-  const ip = req.headers['x-real-ip'] || req.socket.remoteAddress || 'unknown';
+  const ip = clientIp(req);
 
   res.setHeader('X-Content-Type-Options', 'nosniff');
+
+  if (url.pathname.startsWith('/api/') &&
+      rateLimited(ip, budgetFor(url.pathname, req.method))) {
+    sendJson(res, 429, { error: 'Too many requests, slow down.' }, { 'Retry-After': '60' });
+    return;
+  }
 
   if (url.pathname === '/api/leaderboard' && req.method === 'GET') {
     const asked = Number(url.searchParams.get('limit'));
@@ -363,10 +531,6 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (url.pathname === '/api/score' && req.method === 'POST') {
-    if (rateLimited(ip)) {
-      sendJson(res, 429, { error: 'Too many submissions, slow down.' });
-      return;
-    }
     let body;
     try {
       body = JSON.parse(await readBody(req));
@@ -379,11 +543,12 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 400, { error });
       return;
     }
-    const improved = recordRun(run);
+    const { improved, full } = recordRun(run);
     const list = leaderboard();
     const rank = list.findIndex((e) => e.name.toLowerCase() === run.name.toLowerCase());
     sendJson(res, 200, {
       improved,
+      full,
       rank: rank === -1 ? null : rank + 1,
       entries: list,
       players: board.entries.length,
@@ -431,8 +596,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (url.pathname === '/api/admin/reset' && req.method === 'POST') {
-    const result = resetBoard();
-    await writeQueue;
+    const result = await resetBoard();
     sendJson(res, 200, {
       ...result,
       board: { id: board.id, createdAt: board.createdAt }
@@ -471,6 +635,14 @@ const server = http.createServer(async (req, res) => {
 
   serveStatic(req, res, url.pathname);
 });
+
+// A connection that dawdles holds a socket and a buffer; keep the ceilings low
+// so a pile of half-open requests cannot sit on the process.
+server.headersTimeout = 10000;
+server.requestTimeout = 15000;
+server.keepAliveTimeout = 5000;
+server.maxRequestsPerSocket = 200;
+server.maxHeadersCount = 60;
 
 loadScores();
 loadDeleted();
