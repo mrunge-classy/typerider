@@ -271,6 +271,39 @@ table.rows tr.is-you td { background: var(--brand-soft); }
   display: inline-block; font-size: .74rem; color: var(--muted);
   background: var(--bg-soft); border-radius: 999px; padding: .15rem .55rem;
 }
+/* ------------------------------------------------------- board class filter */
+
+.board-filter {
+  display: flex; gap: .35rem; padding: .8rem 1.5rem;
+  border-bottom: 1px solid var(--line); flex-wrap: wrap;
+}
+.board-tab {
+  font: inherit; font-size: .85rem; font-weight: 650; cursor: pointer;
+  padding: .35rem .8rem; border-radius: 999px;
+  border: 1.5px solid var(--line); background: transparent; color: var(--ink-soft);
+  transition: border-color .12s ease, color .12s ease, background .12s ease;
+}
+.board-tab:hover { border-color: var(--brand); color: var(--brand-dark); }
+.board-tab:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.board-tab.is-on { background: var(--brand); border-color: var(--brand); color: #fff; }
+.board-tab .n { opacity: .65; font-variant-numeric: tabular-nums; }
+
+/* Sits under the table, in the muted register: it qualifies the numbers rather
+   than announcing itself. */
+.board-note {
+  padding: .7rem 1.5rem; border-top: 1px solid var(--line);
+  color: var(--muted); font-size: .8rem; line-height: 1.5;
+}
+
+.device-pill {
+  display: inline-block; font-size: .72rem; font-weight: 650;
+  border-radius: 999px; padding: .15rem .55rem;
+  background: var(--bg-soft); color: var(--ink-soft);
+}
+.device-pill.is-mobile { background: var(--brand-soft); color: var(--brand-dark); }
+.device-pill.is-unknown { color: var(--muted); }
+.col-device { white-space: nowrap; }
+
 .board-empty { padding: 2.5rem 1.5rem; text-align: center; color: var(--muted); }
 .board-meta {
   padding: .7rem 1.5rem;
@@ -577,9 +610,14 @@ body.is-locked { overflow: hidden; }
 
 @media (max-width: 860px) {
   .hero-grid { grid-template-columns: 1fr; }
+  /* Dropped first of the optional columns: the pill repeats what the filter
+     above the table already says. */
+  table.rows th.col-device, table.rows td.col-device { display: none; }
   .nav-links .nav-link { display: none; }
   .facts { gap: 1.4rem; }
-  table.rows th:nth-child(4), table.rows td:nth-child(4) { display: none; }
+  /* By class, not by position: these tables no longer all have the same
+     columns, and counting them hid the mini board's WPM instead of accuracy. */
+  table.rows th.col-accuracy, table.rows td.col-accuracy { display: none; }
   table.rows th, table.rows td { padding-inline: 1rem; }
   .board-champion { padding-inline: 1rem; }
 }
@@ -592,7 +630,7 @@ body.is-locked { overflow: hidden; }
   .live b { font-size: 1rem; }
   .result-stats { gap: 1.4rem; }
   /* Drop the story column too: rider names need the room more than it does. */
-  table.rows th:nth-child(3), table.rows td:nth-child(3) { display: none; }
+  table.rows th.col-track, table.rows td.col-track { display: none; }
   .hero-note { align-items: flex-start; line-height: 1.5; }
   .pick { padding: .9rem 1rem; gap: .75rem; }
   .pick .meta { font-size: .72rem; }

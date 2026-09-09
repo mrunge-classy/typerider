@@ -8,16 +8,8 @@
   var lastName = null;
   try { lastName = localStorage.getItem('typerider.name'); } catch (e) { /* private mode */ }
 
-  function esc(s) {
-    return String(s).replace(/[&<>"]/g, function (c) {
-      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
-    });
-  }
-
-  function trackTitle(id) {
-    var t = (window.TYPERIDER_TRACKS || []).find(function (x) { return x.id === id; });
-    return t ? t.title : id;
-  }
+  var BOARD = window.TYPERIDER_BOARD;
+  var esc = BOARD.esc;
 
   // The board can be reset, so "fastest rider" only means fastest since this
   // board started — say when that was rather than implying an all-time record.
@@ -120,57 +112,109 @@
     });
   }
 
+  /* ------------------------------------------------------------ the board */
+
+  // Which board is on screen. Ranking happens server-side per class, so this is
+  // a query parameter rather than a filter over rows already fetched -- a
+  // mobile rider sitting 30th overall still has to be able to top their own
+  // board.
+  var view = null; // null = every run, regardless of class
+
+  var VIEWS = [
+    { id: null, label: 'All runs' },
+    { id: 'mobile', label: 'Mobile' },
+    { id: 'desktop', label: 'Desktop' }
+  ];
+
+  function renderFilter(counts) {
+    return '<div class="board-filter" role="group" aria-label="Which board to show">' +
+      VIEWS.map(function (v) {
+        var n = !v.id ? null : (counts && counts[v.id]) || 0;
+        return '<button type="button" class="board-tab' + (v.id === view ? ' is-on' : '') +
+          '" data-view="' + (v.id || '') + '"' + (v.id === view ? ' aria-current="true"' : '') + '>' +
+          v.label + (n === null ? '' : ' <span class="n">' + n + '</span>') +
+          '</button>';
+      }).join('') +
+      '</div>';
+  }
+
+  // Said once, on the board itself, rather than in a tooltip nobody opens: the
+  // split is by what was typed on, and it is evidence rather than proof.
+  function filterNote(counts) {
+    var stray = (counts && counts.unknown) || 0;
+    var note = view === null
+      ? 'Mobile and desktop runs are scored separately — a touchscreen keyboard is slower than a physical one.'
+      : 'Runs are filed by what the typing looked like, not by what the browser calls itself. It can be fooled.';
+    if (view === null && stray) {
+      note += ' ' + stray + (stray === 1 ? ' run predates' : ' runs predate') +
+        ' the split and sit outside both boards.';
+    }
+    return '<div class="board-note">' + esc(note) + '</div>';
+  }
+
+  function emptyMessage() {
+    if (view === 'mobile') return 'No phone runs yet — the mobile board is wide open.';
+    if (view === 'desktop') return 'No keyboard runs yet — the desktop board is wide open.';
+    return 'The board is wide open — the first run takes first place.';
+  }
+
   function renderBoard(data) {
     var entries = data.entries || [];
+    var counts = data.counts;
     if (factPlayers) factPlayers.textContent = data.players || 0;
 
     if (!entries.length) {
-      board.innerHTML = '<div class="board-empty">' +
+      board.innerHTML = renderFilter(counts) +
+        '<div class="board-empty">' +
         '<p><strong>No times yet.</strong></p>' +
-        '<p>The board is wide open — the first run takes first place.</p></div>' +
-        startedLine(data);
+        '<p>' + esc(emptyMessage()) + '</p></div>' +
+        filterNote(counts) + startedLine(data);
       return;
     }
 
     var champ = entries[0];
-    var html = '<div class="board-champion">' +
+    var html = renderFilter(counts) +
+      '<div class="board-champion">' +
       '<div class="champion-medal" aria-hidden="true">★</div>' +
       '<div class="champion-body">' +
-        '<div class="label">Fastest rider</div>' +
+        '<div class="label">' + (view ? esc(BOARD.deviceLabel(view)) + ' champion' : 'Fastest rider') + '</div>' +
         '<div class="who">' + esc(champ.name) + '</div>' +
       '</div>' +
       '<div class="champion-score"><b>' + champ.wpm.toFixed(1) + '</b><span>WPM · ' +
         champ.accuracy.toFixed(0) + '% accuracy</span></div>' +
     '</div>';
 
-    html += '<table class="rows"><thead><tr>' +
-      '<th class="col-rank">#</th><th>Rider</th><th>Story</th>' +
-      '<th class="col-num">Accuracy</th><th class="col-num">WPM</th>' +
-      '</tr></thead><tbody>' +
-      entries.map(function (e) {
-        var mine = lastName && e.name.toLowerCase() === lastName.toLowerCase();
-        return '<tr' + (mine ? ' class="is-you"' : '') + '>' +
-          '<td class="col-rank">' + e.rank + '</td>' +
-          '<td class="name-cell">' + esc(e.name) + (mine ? ' <span class="track-pill">you</span>' : '') + '</td>' +
-          '<td><span class="track-pill">' + esc(trackTitle(e.track)) + '</span></td>' +
-          '<td class="col-num">' + e.accuracy.toFixed(0) + '%</td>' +
-          '<td class="col-num"><b>' + e.wpm.toFixed(1) + '</b></td>' +
-        '</tr>';
-      }).join('') +
-      '</tbody></table>' +
-      startedLine(data);
+    // The class column earns its place only on the combined view; on a filtered
+    // board every row would carry the same pill.
+    html += BOARD.table(entries, {
+      columns: view ? ['rank', 'name', 'track', 'accuracy', 'wpm']
+                    : ['rank', 'name', 'track', 'device', 'accuracy', 'wpm'],
+      you: lastName
+    }) + filterNote(counts) + startedLine(data);
 
     board.innerHTML = html;
   }
 
-  renderTracks();
+  function loadBoard() {
+    // No `limit` here on purpose: how many rows the board shows is a server-side
+    // setting an admin can change.
+    fetch('/api/leaderboard' + (view ? '?device=' + encodeURIComponent(view) : ''))
+      .then(function (r) { return r.json(); })
+      .then(renderBoard)
+      .catch(function () {
+        board.innerHTML = '<div class="board-empty">The board could not be loaded right now.</div>';
+      });
+  }
 
-  // No `limit` here on purpose: how many rows the board shows is a server-side
-  // setting an admin can change.
-  fetch('/api/leaderboard')
-    .then(function (r) { return r.json(); })
-    .then(renderBoard)
-    .catch(function () {
-      board.innerHTML = '<div class="board-empty">The board could not be loaded right now.</div>';
-    });
+  board.addEventListener('click', function (ev) {
+    var tab = ev.target.closest('.board-tab');
+    if (!tab) return;
+    var next = tab.dataset.view || null;
+    if (next === view) return;
+    view = next;
+    loadBoard();
+  });
+
+  renderTracks();
+  loadBoard();
 })();

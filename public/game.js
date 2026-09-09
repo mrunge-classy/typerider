@@ -5,11 +5,12 @@
   var TRACKS = window.TYPERIDER_TRACKS || [];
 
   var $ = function (id) { return document.getElementById(id); };
-  var esc = function (s) {
-    return String(s).replace(/[&<>"]/g, function (c) {
-      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
-    });
-  };
+  var BOARD = window.TYPERIDER_BOARD;
+  var esc = BOARD.esc;
+
+  // Counts what the rider is typing on, for as long as they are typing. It only
+  // ever counts -- the server decides which board the run belongs to.
+  var inputWatch = window.TYPERIDER_INPUT.watch($('typing'));
 
   var store = {
     get: function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
@@ -106,6 +107,8 @@
       mistyped: 0,      // wrong characters typed
       deletedCorrect: 0 // characters that were right and got erased anyway
     };
+
+    inputWatch.reset();
 
     $('game-title').firstChild.textContent = track.title;
     $('game-sub').textContent = track.langLabel + ' · ' + track.lines.length + ' lines';
@@ -327,7 +330,8 @@
         accuracy: Math.round(accuracy * 10) / 10,
         track: run.track.id,
         durationMs: durationMs,
-        chars: run.correctChars
+        chars: run.correctChars,
+        input: inputWatch.report()
       })
     })
       .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
@@ -339,13 +343,16 @@
         }
         $('result-badge').classList.remove('is-error');
         var b = res.body;
+        // Only name a board the rider can actually go and look at.
+        var named = b.device === 'mobile' || b.device === 'desktop';
+        var where = named ? ' on the ' + BOARD.deviceLabel(b.device).toLowerCase() + ' board' : '';
         $('result-badge').textContent = b.rank
-          ? (b.improved ? 'New personal best — rank #' + b.rank + ' on the board.'
-                        : 'Currently rank #' + b.rank + '. Your best still stands.')
+          ? (b.improved ? 'New personal best — rank #' + b.rank + where + '.'
+                        : 'Currently rank #' + b.rank + where + '. Your best still stands.')
           : b.full ? 'The board is full — beat the slowest rider on it to take a seat.'
           : (b.improved ? 'New personal best — keep pushing for the top ten.'
                         : 'Not your best run. Your record still stands.');
-        renderMiniBoard(b.entries || []);
+        renderMiniBoard(b.entries || [], named ? b.device : null);
       })
       .catch(function () {
         $('result-badge').textContent = 'Offline — this run was not saved to the board.';
@@ -368,23 +375,12 @@
     return mistakeCount() + ' mistakes in ' + run.strokes + ' keystrokes · ' + parts.join(' · ');
   }
 
-  function renderMiniBoard(entries) {
+  // Only the board the run was filed under, so the comparison is like for like.
+  function renderMiniBoard(entries, device) {
     if (!entries.length) return;
-    var trackTitle = function (id) {
-      var t = TRACKS.find(function (x) { return x.id === id; });
-      return t ? t.title : id;
-    };
     $('result-board').innerHTML =
-      '<table class="rows"><thead><tr><th class="col-rank">#</th><th>Rider</th>' +
-      '<th>Story</th><th class="col-num">WPM</th></tr></thead><tbody>' +
-      entries.map(function (e) {
-        var mine = e.name.toLowerCase() === player.toLowerCase();
-        return '<tr' + (mine ? ' class="is-you"' : '') + '>' +
-          '<td class="col-rank">' + e.rank + '</td>' +
-          '<td class="name-cell">' + esc(e.name) + '</td>' +
-          '<td><span class="track-pill">' + esc(trackTitle(e.track)) + '</span></td>' +
-          '<td class="col-num"><b>' + e.wpm.toFixed(1) + '</b></td></tr>';
-      }).join('') + '</tbody></table>';
+      (device ? '<div class="board-note">' + esc(BOARD.deviceLabel(device)) + ' board</div>' : '') +
+      BOARD.table(entries, { columns: ['rank', 'name', 'track', 'wpm'], you: player });
   }
 
   // ------------------------------------------------------------------ wiring

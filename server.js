@@ -178,12 +178,27 @@ function cleanLimit(value) {
   return Number.isInteger(n) && n >= MIN_LIMIT && n <= MAX_LIMIT ? n : null;
 }
 
-function leaderboard(limit = settings.leaderboardLimit) {
+// Rank within a class, not within the whole board: a mobile rider placed 30th
+// overall has to be reachable, so the filter has to happen before the slice.
+// Runs recorded before there was a class ('unknown') are left out of the
+// filtered views rather than being guessed into one -- see loadScores.
+function leaderboard(limit = settings.leaderboardLimit, device = null) {
   return board.entries
-    .slice()
+    .filter((entry) => !device || entry.device === device)
     .sort((a, b) => b.wpm - a.wpm || b.accuracy - a.accuracy || a.playedAt - b.playedAt)
     .slice(0, limit)
     .map((entry, i) => ({ rank: i + 1, ...entry }));
+}
+
+// How many riders sit on each board, including the ones predating the split.
+// The homepage uses it to label the filters and to explain the leftovers.
+function deviceCounts() {
+  const counts = { mobile: 0, desktop: 0, unknown: 0 };
+  for (const entry of board.entries) {
+    const device = DEVICES.includes(entry.device) ? entry.device : 'unknown';
+    counts[device]++;
+  }
+  return counts;
 }
 
 // ------------------------------------------------------------- administration
@@ -294,7 +309,70 @@ function cleanName(value) {
   return NAME_RE.test(name) ? name : null;
 }
 
-function validateRun(body) {
+// ----------------------------------------------------------- input method
+
+// What separates the two boards is not the device, it is how the text was
+// entered: a glass keyboard is slower than a physical one. So a phone paired
+// with a Bluetooth keyboard belongs on the desktop board, and classifying on
+// input method rather than device identity is what makes that fall out
+// naturally instead of needing an exception. Do not "fix" this back to UA
+// sniffing -- the values are named mobile/desktop only to match the wording
+// of the issue this came from.
+//
+// Every signal below is forgeable. The client-side ones are self-reported and
+// a determined cheat edits the payload; the headers are spoofable in devtools
+// in seconds. Together they mean a cheat has to fake all of them consistently,
+// which raises the cost -- it does not prevent it, and nothing here should be
+// presented to a player as if it did.
+const DEVICES = ['mobile', 'desktop'];
+const UA_MOBILE = /Mobi|Android|iPhone|iPod|Windows Phone|IEMobile|BlackBerry/i;
+
+const countOf = (value) => (Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : 0);
+
+function serverSaysMobile(req) {
+  const headers = (req && req.headers) || {};
+  // Sec-CH-UA-Mobile is the browser answering the question directly, but only
+  // Chromium sends it; the UA string is the fallback for everyone else.
+  const hint = headers['sec-ch-ua-mobile'];
+  if (hint === '?1') return true;
+  if (hint === '?0') return false;
+  return UA_MOBILE.test(String(headers['user-agent'] || ''));
+}
+
+/* Returns the class the run is filed under plus, when the signals disagree, the
+   reason -- kept on the entry so an admin can see why a run landed where it did
+   rather than having to trust the classifier blindly. */
+function classifyInput(raw, req) {
+  const evidence = raw && typeof raw === 'object' ? raw : {};
+  const keyed = countOf(evidence.keyStrokes);     // keydowns carrying a physical .code
+  const touched = countOf(evidence.touchStrokes); // characters entered while touching
+  const coarse = evidence.coarsePointer === true;
+  const headerMobile = serverSaysMobile(req);
+
+  // A physical keyboard was demonstrably used, so the run gets no benefit from
+  // the slower board -- whatever the device says it is. This is both the
+  // anti-cheat rule and simply the correct answer.
+  if (keyed > 0) {
+    return { device: 'desktop', flag: headerMobile ? 'keyboard-on-mobile-device' : null };
+  }
+
+  if (touched > 0 && coarse) {
+    // Client evidence says touch while both server-side signals say otherwise:
+    // either a forged payload or a touchscreen PC. Desktop is the right answer
+    // for both, so the tie breaks against the claim rather than for it.
+    if (!headerMobile) return { device: 'desktop', flag: 'touch-claim-without-header' };
+    return { device: 'mobile', flag: null };
+  }
+
+  // Nothing observed from the run at all. The real client always reports, so
+  // this is a hand-built request or a stale cached page -- and headers alone are
+  // the one signal a forger gets for free, so filing it as mobile on their say-so
+  // would leave the cheapest possible cheat wide open. It goes on neither board:
+  // visible under "all runs", ranked against nobody.
+  return { device: 'unknown', flag: 'no-input-evidence' };
+}
+
+function validateRun(body, req) {
   const name = cleanName(body.name);
   if (!name) return { error: 'Username must be 2-16 letters, digits, spaces, . _ or -' };
 
@@ -316,6 +394,8 @@ function validateRun(body) {
   const derived = (chars / 5) / (durationMs / 60000);
   if (Math.abs(derived - wpm) > 2) return { error: 'Run does not add up' };
 
+  const { device, flag } = classifyInput(body.input, req);
+
   return {
     run: {
       id: crypto.randomUUID(),
@@ -323,6 +403,8 @@ function validateRun(body) {
       wpm: Math.round(wpm * 10) / 10,
       accuracy: Math.round(accuracy * 10) / 10,
       track,
+      device,
+      deviceFlag: flag,
       playedAt: Date.now()
     }
   };
@@ -339,11 +421,18 @@ function slowestIndex() {
   return worst;
 }
 
-// One row per name, and never more than MAX_ENTRIES rows. A new name on a full
-// board has to beat the slowest rider to get a seat, which is what stops an
-// attacker from minting unlimited usernames to grow the board without end.
+// One row per name *per class*, and never more than MAX_ENTRIES rows. Keying on
+// the name alone would let a rider's fast desktop run stand as their only entry
+// and quietly suppress their own slower mobile one, which would leave the mobile
+// board permanently empty for anyone who also plays at a desk -- the two boards
+// have to be able to hold the same rider twice.
+//
+// A new name on a full board still has to beat the slowest rider to get a seat,
+// which is what stops an attacker minting unlimited usernames to grow the board
+// without end; classes share that one budget deliberately.
 function recordRun(run) {
-  const existing = board.entries.find((s) => s.name.toLowerCase() === run.name.toLowerCase());
+  const existing = board.entries.find((s) =>
+    s.name.toLowerCase() === run.name.toLowerCase() && s.device === run.device);
 
   if (existing) {
     if (run.wpm <= existing.wpm) return { improved: false, full: false };
@@ -638,9 +727,15 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === '/api/leaderboard' && req.method === 'GET') {
     const asked = Number(url.searchParams.get('limit'));
     const limit = Math.min(asked > 0 ? asked : settings.leaderboardLimit, MAX_LIMIT);
+    // An unrecognised device is treated as "no filter" rather than as an error:
+    // the board is a public read, and a typo in a query string should not 400.
+    const wanted = url.searchParams.get('device');
+    const device = DEVICES.includes(wanted) ? wanted : null;
     sendJson(res, 200, {
-      entries: leaderboard(limit),
+      entries: leaderboard(limit, device),
       players: board.entries.length,
+      counts: deviceCounts(),
+      device,
       board: { id: board.id, createdAt: board.createdAt },
       limit
     });
@@ -655,18 +750,22 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 400, { error: 'Invalid JSON' });
       return;
     }
-    const { error, run } = validateRun(body || {});
+    const { error, run } = validateRun(body || {}, req);
     if (error) {
       sendJson(res, 400, { error });
       return;
     }
     const { improved, full } = recordRun(run);
-    const list = leaderboard();
-    const rank = list.findIndex((e) => e.name.toLowerCase() === run.name.toLowerCase());
+    // Ranked on the board the run was actually filed under, which is the only
+    // comparison that means anything now that the two are scored separately.
+    const list = leaderboard(settings.leaderboardLimit, run.device);
+    const rank = list.findIndex((e) =>
+      e.name.toLowerCase() === run.name.toLowerCase() && e.device === run.device);
     sendJson(res, 200, {
       improved,
       full,
       rank: rank === -1 ? null : rank + 1,
+      device: run.device,
       entries: list,
       players: board.entries.length,
       board: { id: board.id, createdAt: board.createdAt }
