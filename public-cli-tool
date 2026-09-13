@@ -1,0 +1,3 @@
+The tlb is currently a password protected cli-tool but if somebody wanted to host their own typerider game they would have to change the host path. 
+
+How would I create a tlb cmd-line tool that follows a simple setup process enough so that it becomes a general tool. 
